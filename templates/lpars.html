@@ -1,0 +1,590 @@
+{% extends "base.html" %}
+{% block title %}LPARs{% endblock %}
+{% block page_title %}Logical Partitions{% endblock %}
+{% block content %}
+
+<!-- ── Toolbar ── -->
+<div class="toolbar toolbar-stacked">
+  <div class="toolbar-row">
+    <div class="toolbar-group">
+      <label class="label-inline">HMC:</label>
+      <select id="local-hmc-selector" onchange="onHMCChange()">
+        <option value="">— select HMC —</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label class="label-inline">System:</label>
+      <select id="system-selector" onchange="loadLPARs()">
+        <option value="">— select system —</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="loadLPARs()">↻ Refresh</button>
+    <span id="lpar-method-badge" class="badge badge-grey" style="display:none"></span>
+  </div>
+</div>
+
+<!-- ── LPAR table ── -->
+<div class="card">
+  <div class="card-title">LPARs</div>
+  <table class="data-table" id="lpar-table">
+    <thead>
+      <tr>
+        <th>ID</th><th>Name</th><th>Type</th><th>Profile</th>
+        <th>State</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="lpar-tbody">
+      <tr><td colspan="6" class="muted center">Select an HMC and managed system above</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ═══════════════ DETAIL DRAWER ═══════════════ -->
+<div class="drawer-overlay hidden" id="detail-overlay" onclick="closeDetail(event)">
+  <div class="drawer" id="detail-drawer">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="detail-lpar-name">LPAR Details</div>
+        <div class="drawer-sub" id="detail-lpar-sub"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn btn-xs btn-secondary" onclick="fetchDetail(true)" title="Show raw SSH output">Debug</button>
+        <button class="modal-close" onclick="closeDetail()">✕</button>
+      </div>
+    </div>
+    <div class="drawer-body" id="detail-body">
+      <div class="muted center">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ CONFIRM ACTION MODAL ═══════════════ -->
+<div class="modal-overlay hidden" id="lpar-action-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="lam-title">Confirm Action</span>
+      <button class="modal-close" onclick="closeModal('lpar-action-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="lam-msg"></p>
+      <div id="lam-result" class="result-box hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('lpar-action-modal')">Cancel</button>
+      <button class="btn btn-primary" id="lam-confirm-btn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let localHMCId     = null;
+let localHMCs      = [];
+let currentSystemId = null;
+const urlParams    = new URLSearchParams(window.location.search);
+
+// ── Init selectors ────────────────────────────────────────
+async function initLocalSelector() {
+  localHMCs = await fetch("/api/hmcs").then(r => r.json());
+  const sel = document.getElementById("local-hmc-selector");
+  sel.innerHTML = '<option value="">— select HMC —</option>' +
+    localHMCs.map(h =>
+      `<option value="${h.id}">${h.name} (${h.host})</option>`
+    ).join("");
+
+  // Pre-select from URL or global
+  const preHmc = urlParams.get("hmc") || window.activeHMCId;
+  if (preHmc) { sel.value = preHmc; localHMCId = preHmc; }
+  if (localHMCId) await loadSystems();
+}
+
+function onHMCChange() {
+  localHMCId = document.getElementById("local-hmc-selector").value || null;
+  const globalSel = document.getElementById("hmc-selector");
+  if (globalSel) globalSel.value = localHMCId || "";
+  if (localHMCId) {
+    window.activeHMCId = localHMCId;
+    sessionStorage.setItem("activeHMCId", localHMCId);
+    loadSystems();
+  }
+}
+
+async function loadSystems() {
+  const hmcId = localHMCId;
+  if (!hmcId) return;
+  const r = await fetch(`/api/hmcs/${hmcId}/managed-systems?method=auto`);
+  const d = await r.json();
+  const sel = document.getElementById("system-selector");
+  sel.innerHTML = '<option value="">— select system —</option>';
+  if (d.ok) {
+    d.data.forEach(s => sel.add(new Option(s.name || s.id, s.id)));
+    const preSys = urlParams.get("system");
+    if (preSys) { sel.value = preSys; loadLPARs(); }
+  }
+}
+
+// ── Load LPARs ────────────────────────────────────────────
+async function loadLPARs() {
+  const hmcId = localHMCId || window.activeHMCId;
+  const sysId = document.getElementById("system-selector").value;
+  if (!hmcId) { showToast("Select an HMC first", "warn"); return; }
+  if (!sysId) { showToast("Select a managed system", "warn"); return; }
+  currentSystemId = sysId;
+
+  const tbody = document.getElementById("lpar-tbody");
+  const badge = document.getElementById("lpar-method-badge");
+  tbody.innerHTML = '<tr><td colspan="6" class="muted center">Loading…</td></tr>';
+  badge.style.display = "none";
+
+  const r = await fetch(`/api/hmcs/${hmcId}/managed-systems/${sysId}/lpars?method=auto`);
+  const d = await r.json();
+
+  if (d.method) {
+    badge.textContent = d.method === "ssh" ? "via SSH" : "via REST API";
+    badge.className = "badge " + (d.method === "ssh" ? "badge-blue" : "badge-green");
+    badge.style.display = "";
+  }
+
+  if (!d.ok) {
+    tbody.innerHTML = `<tr><td colspan="6" class="center" style="padding:20px">
+      <span class="muted">${d.error || "Failed to load LPARs"}</span><br><br>
+      <a href="/connect" class="btn btn-primary btn-sm">Go to Connect page</a>
+    </td></tr>`;
+    return;
+  }
+  if (!d.data.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted center">No LPARs found</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = d.data.map(p => `
+    <tr>
+      <td class="muted">${p.lpar_id || "—"}</td>
+      <td>
+        <button class="lpar-name-btn" onclick="openDetail('${esc(p.id)}','${esc(p.name)}')">
+          <strong>${p.name || "—"}</strong>
+        </button>
+      </td>
+      <td class="muted">${p.type || "—"}</td>
+      <td class="muted" style="font-size:12px">${p.profile || "—"}</td>
+      <td><span class="badge ${lparStateClass(p.state)}">${p.state || "unknown"}</span></td>
+      <td class="action-cell">
+        <button class="btn btn-xs btn-outline-icon" title="Details"
+                onclick="openDetail('${esc(p.id)}','${esc(p.name)}')">&#9432;</button>
+        <button class="btn btn-xs btn-green"    onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','activate')">On</button>
+        <button class="btn btn-xs btn-orange"   onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','softstop')">Stop</button>
+        <button class="btn btn-xs btn-red"      onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','shutdown')">Off</button>
+        <button class="btn btn-xs btn-secondary" onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','restart')">↺</button>
+      </td>
+    </tr>`).join("");
+}
+
+function esc(s) { return (s||"").replace(/'/g,"\\'"); }
+
+function lparStateClass(s) {
+  if (!s) return "badge-grey";
+  s = s.toLowerCase();
+  if (s.includes("running") || s.includes("open firmware")) return "badge-green";
+  if (s.includes("not activated") || s.includes("shutdown")) return "badge-red";
+  if (s.includes("starting")) return "badge-orange";
+  return "badge-grey";
+}
+
+// ── Detail drawer ─────────────────────────────────────────
+let _lastDetailHmcId, _lastDetailSysId, _lastDetailLparId;
+
+async function openDetail(lparId, lparName) {
+  _lastDetailHmcId  = localHMCId || window.activeHMCId;
+  _lastDetailSysId  = currentSystemId;
+  _lastDetailLparId = lparId;
+
+  document.getElementById("detail-lpar-name").textContent = lparName;
+  document.getElementById("detail-lpar-sub").textContent  = currentSystemId;
+  document.getElementById("detail-body").innerHTML =
+    '<div class="detail-loading"><div class="spinner"></div> Loading resources…</div>';
+  document.getElementById("detail-overlay").classList.remove("hidden");
+  await fetchDetail(false);
+}
+
+async function fetchDetail(debugMode) {
+  const url = `/api/hmcs/${_lastDetailHmcId}/managed-systems/${_lastDetailSysId}`
+            + `/lpars/${encodeURIComponent(_lastDetailLparId)}/detail`
+            + (debugMode ? "?debug=1" : "");
+  let d;
+  try {
+    const r = await fetch(url);
+    d = await r.json();
+  } catch(e) {
+    document.getElementById("detail-body").innerHTML =
+      `<div class="result-box error">✗ Network error: ${e}</div>`;
+    return;
+  }
+  if (!d.ok) {
+    document.getElementById("detail-body").innerHTML =
+      `<div class="result-box error">✗ ${d.error || JSON.stringify(d)}</div>`;
+    return;
+  }
+  if (debugMode) {
+    showRawDebug(d);
+    return;
+  }
+  document.getElementById("detail-body").innerHTML = renderDetail(d);
+}
+
+function showRawDebug(d) {
+  const raw = d.raw || {};
+  let html = '<h4 style="margin-bottom:10px">Raw SSH output per command</h4>';
+  for (const [key, res] of Object.entries(raw)) {
+    const ok = res.ok;
+    html += `<div style="margin-bottom:14px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:3px">
+        <span class="badge ${ok?'badge-green':'badge-red'}">${ok?'ok':'err'}</span>
+        &nbsp;${key}
+      </div>
+      <pre class="raw-pre">${escHtml(ok ? (res.output||'(empty)') : (res.error||''))}</pre>
+    </div>`;
+  }
+  html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px"
+             onclick="fetchDetail(false)">← Back to detail view</button>`;
+  document.getElementById("detail-body").innerHTML = html;
+}
+
+function escHtml(s) {
+  return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function closeDetail(e) {
+  if (e && e.target !== document.getElementById("detail-overlay")) return;
+  document.getElementById("detail-overlay").classList.add("hidden");
+}
+
+function renderDetail(d) {
+  const cpu = (d.cpu && d.cpu[0]) || {};
+  const mem = (d.mem && d.mem[0]) || {};
+
+  // If both cpu and mem are empty, show the errors prominently
+  if (!d.cpu?.length && !d.mem?.length) {
+    const errs = Object.entries(d.errors||{})
+      .map(([k,v]) => `<div><strong>${k}</strong>: ${escHtml(v||"")}</div>`).join("");
+    return `<div class="result-box error" style="margin-bottom:12px">
+      <strong>No processor or memory data returned.</strong><br>
+      ${errs || "SSH commands returned empty output."}
+      <br><br>Click <strong>Debug</strong> (top right) to see the raw HMC output.
+    </div>` + renderAdapters(d);
+  }
+
+  // ── CPU values ──
+  const currProcs  = cpu.curr_procs      || "—";
+  const currUnits  = cpu.curr_proc_units || "—";
+  const minProcs   = cpu.min_procs       || "—";
+  const maxProcs   = cpu.max_procs       || "—";
+  const minUnits   = cpu.min_proc_units  || "—";
+  const maxUnits   = cpu.max_proc_units  || "—";
+  const runProcs   = cpu.run_procs       || "—";
+  const pendProcs  = cpu.pend_procs      || "—";
+  const sharing    = cpu.sharing_mode    || "—";
+  const uncapWt    = cpu.uncap_weight    || "—";
+  const isShared   = sharing && sharing.toLowerCase().includes("shared");
+
+  const procPct = (parseFloat(currProcs)||0) / (parseFloat(maxProcs)||1) * 100;
+  const unitPct = (parseFloat(currUnits)||0) / (parseFloat(maxUnits)||1) * 100;
+
+  // ── Memory values ──
+  const currMem = mem.curr_mem || "—";
+  const minMem  = mem.min_mem  || "—";
+  const maxMem  = mem.max_mem  || "—";
+  const runMem  = mem.run_mem  || "—";
+  const memPct  = (parseFloat(currMem)||0) / (parseFloat(maxMem)||1) * 100;
+
+  // ── Helper: adapter none placeholder ──
+  const none = '<div class="adapter-none">None</div>';
+
+  // ── Virtual Ethernet ──
+  const vethRows = (d.veth||[]).map(e => `
+    <div class="adapter-row">
+      ${svgIcon("eth")}
+      <div class="adapter-info">
+        <span class="adapter-label">vEth  Slot ${e.slot}</span>
+        <span class="adapter-detail">PVID <strong>${e.pvid||"—"}</strong>
+          ${e.addl_vlans && e.addl_vlans !== "none" ? ` &nbsp;+[${e.addl_vlans}]` : ""}
+          &nbsp;·&nbsp; IEEE ${e.ieee==="1"?"✓":"✗"}
+          &nbsp;·&nbsp; MAC <code>${fmtMac(e.mac)}</code></span>
+      </div>
+    </div>`).join("") || none;
+
+  // ── Virtual SCSI ──
+  const vscsiRows = (d.vscsi||[]).map(e => `
+    <div class="adapter-row">
+      ${svgIcon("scsi")}
+      <div class="adapter-info">
+        <span class="adapter-label">vSCSI  Slot ${e.slot}</span>
+        <span class="adapter-detail">→ <strong>${e.remote_lpar||"—"}</strong> slot ${e.remote_slot||"—"}</span>
+      </div>
+    </div>`).join("") || none;
+
+  // ── Virtual FC ──
+  const vfcRows = (d.vfc||[]).map(e => {
+    const wwpns = (e.wwpns||"—").split(",").filter(Boolean);
+    return `
+    <div class="adapter-row">
+      ${svgIcon("fc")}
+      <div class="adapter-info">
+        <span class="adapter-label">vFC  Slot ${e.slot}</span>
+        ${wwpns.map(w=>`<span class="adapter-detail wwpn">WWPN <code>${fmtWWPN(w)}</code></span>`).join("")}
+        <span class="adapter-detail">→ <strong>${e.remote_lpar||"—"}</strong> slot ${e.remote_slot||"—"}</span>
+      </div>
+    </div>`;
+  }).join("") || none;
+
+  // ── Physical Ethernet (HEA) ──
+  const phyEthRows = (d.phyeth||[]).map(e => `
+    <div class="adapter-row">
+      ${svgIcon("phyeth")}
+      <div class="adapter-info">
+        <span class="adapter-label">HEA  Adapter ${e.adapter_id}  Port ${e.port_id}</span>
+        <span class="adapter-detail">Group ${e.port_group||"—"}
+          &nbsp;·&nbsp; MAC <code>${fmtMac(e.mac)}</code></span>
+      </div>
+    </div>`).join("");
+
+  // ── SR-IOV ──
+  const sriovRows = (d.sriov||[]).map(e => `
+    <div class="adapter-row">
+      ${svgIcon("phyeth")}
+      <div class="adapter-info">
+        <span class="adapter-label">SR-IOV  Adapter ${e.adapter_id}  LP ${e.logical_port_id}</span>
+        <span class="adapter-detail">Capacity ${e.capacity||"—"}%
+          &nbsp;·&nbsp; MAC <code>${fmtMac(e.mac)}</code></span>
+      </div>
+    </div>`).join("");
+
+  const phyEthAll = (phyEthRows + sriovRows) || none;
+
+  // ── Physical FC ──
+  const phyFcRows = (d.phyfc||[]).map(e => `
+    <div class="adapter-row">
+      ${svgIcon("phyfc")}
+      <div class="adapter-info">
+        <span class="adapter-label">FC HBA  Adapter ${e.adapter_id}  Port ${e.port_index}</span>
+        <span class="adapter-detail">WWPN <code>${fmtWWPN(e.wwpn||"—")}</code></span>
+      </div>
+    </div>`).join("") || none;
+
+  // ── Error notes (only real errors, not "no resource" noise) ──
+  const errNotes = Object.entries(d.errors||{})
+    .filter(([,v]) => v && !v.includes("No results") && !v.includes("not supported"))
+    .map(([k,v]) =>
+      `<div class="result-box error" style="margin-top:6px;font-size:12px">
+        <strong>${k.toUpperCase()}</strong>: ${escHtml(v)}</div>`).join("");
+
+  return `
+  <div class="detail-grid">
+
+    <!-- ── CPU ── -->
+    <div class="detail-tile">
+      <div class="detail-tile-header">${svgIcon("cpu")} <span>Processor</span>
+        <span class="sharing-badge ${isShared?"badge-orange":"badge-blue"}">${sharing}</span>
+      </div>
+      <div class="resource-bar-wrap">
+        <div class="resource-bar-label-top">vCPUs &nbsp;<span>${currProcs} / ${maxProcs}</span></div>
+        <div class="resource-bar"><div class="resource-bar-fill"
+          style="width:${Math.min(procPct,100).toFixed(1)}%"></div></div>
+      </div>
+      ${isShared ? `
+      <div class="resource-bar-wrap" style="margin-top:6px">
+        <div class="resource-bar-label-top">Entitlement (proc units) &nbsp;<span>${currUnits} / ${maxUnits}</span></div>
+        <div class="resource-bar"><div class="resource-bar-fill resource-bar-ent"
+          style="width:${Math.min(unitPct,100).toFixed(1)}%"></div></div>
+      </div>` : ""}
+      <div class="detail-kv" style="margin-top:10px">
+        <span>Curr vCPUs</span>   <strong>${currProcs}</strong>
+        <span>Proc Units</span>   <strong>${currUnits}</strong>
+        <span>Min vCPUs</span>    <strong>${minProcs}</strong>
+        <span>Max vCPUs</span>    <strong>${maxProcs}</strong>
+        <span>Min Units</span>    <strong>${minUnits}</strong>
+        <span>Max Units</span>    <strong>${maxUnits}</strong>
+        <span>Run vCPUs</span>    <strong>${runProcs}</strong>
+        <span>Pend vCPUs</span>   <strong>${pendProcs}</strong>
+        ${isShared ? `<span>Uncap Weight</span><strong>${uncapWt}</strong>` : ""}
+      </div>
+    </div>
+
+    <!-- ── Memory ── -->
+    <div class="detail-tile">
+      <div class="detail-tile-header">${svgIcon("mem")} <span>Memory</span></div>
+      <div class="resource-bar-wrap">
+        <div class="resource-bar-label-top">MB &nbsp;<span>${currMem} / ${maxMem}</span></div>
+        <div class="resource-bar"><div class="resource-bar-fill resource-bar-mem"
+          style="width:${Math.min(memPct,100).toFixed(1)}%"></div></div>
+      </div>
+      <div class="detail-kv" style="margin-top:10px">
+        <span>Curr MB</span>   <strong>${currMem}</strong>
+        <span>Run MB</span>    <strong>${runMem}</strong>
+        <span>Min MB</span>    <strong>${minMem}</strong>
+        <span>Max MB</span>    <strong>${maxMem}</strong>
+      </div>
+    </div>
+
+    <!-- ── Virtual Ethernet ── -->
+    <div class="detail-tile detail-tile-wide">
+      <div class="detail-tile-header">${svgIcon("eth")} <span>Virtual Ethernet</span></div>
+      <div class="adapter-list">${vethRows}</div>
+    </div>
+
+    <!-- ── Physical Ethernet (HEA / SR-IOV) ── -->
+    <div class="detail-tile detail-tile-wide">
+      <div class="detail-tile-header">${svgIcon("phyeth")} <span>Physical Ethernet (HEA / SR-IOV)</span></div>
+      <div class="adapter-list">${phyEthAll}</div>
+    </div>
+
+    <!-- ── Virtual SCSI ── -->
+    <div class="detail-tile">
+      <div class="detail-tile-header">${svgIcon("scsi")} <span>Virtual SCSI</span></div>
+      <div class="adapter-list">${vscsiRows}</div>
+    </div>
+
+    <!-- ── Virtual FC ── -->
+    <div class="detail-tile">
+      <div class="detail-tile-header">${svgIcon("fc")} <span>Virtual Fibre Channel</span></div>
+      <div class="adapter-list">${vfcRows}</div>
+    </div>
+
+    <!-- ── Physical FC HBAs ── -->
+    <div class="detail-tile detail-tile-wide">
+      <div class="detail-tile-header">${svgIcon("phyfc")} <span>Physical FC HBAs</span></div>
+      <div class="adapter-list">${phyFcRows}</div>
+    </div>
+
+  </div>
+  ${errNotes}`;
+}
+
+// ── Adapters-only render (used when cpu/mem is empty) ────
+function renderAdapters(d) {
+  return `<div class="detail-grid">${renderDetail.__adapterTiles(d)}</div>`;
+}
+// Attach adapter tiles builder to renderDetail so it can be reused
+renderDetail.__adapterTiles = function(d) { return ""; }; // placeholder, overwritten below
+
+// ── Formatting helpers ────────────────────────────────────
+function fmtMac(s) {
+  if (!s || s === "none" || s === "—") return "—";
+  // Insert colons if bare hex: AABBCCDDEEFF → AA:BB:CC:DD:EE:FF
+  const c = s.replace(/[^0-9a-fA-F]/g,"");
+  if (c.length === 12) return c.match(/.{2}/g).join(":").toUpperCase();
+  return s;
+}
+function fmtWWPN(s) {
+  if (!s || s === "—") return "—";
+  const c = s.replace(/[^0-9a-fA-F]/g,"");
+  if (c.length === 16) return c.match(/.{2}/g).join(":").toUpperCase();
+  return s;
+}
+
+function svgIcon(type) {
+  const icons = {
+    cpu: `<svg viewBox="0 0 20 20" class="detail-icon"><rect x="5" y="5" width="10" height="10" rx="1" stroke-width="1.5" fill="none" stroke="currentColor"/>
+          <line x1="8" y1="2" x2="8" y2="5" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="12" y1="2" x2="12" y2="5" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="8" y1="15" x2="8" y2="18" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="12" y1="15" x2="12" y2="18" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="2" y1="8" x2="5" y2="8" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="2" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="15" y1="8" x2="18" y2="8" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="15" y1="12" x2="18" y2="12" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="8" y="8" width="4" height="4" fill="currentColor" opacity=".4"/></svg>`,
+    mem: `<svg viewBox="0 0 20 20" class="detail-icon"><rect x="2" y="6" width="16" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <line x1="6" y1="6" x2="6" y2="14" stroke="currentColor" stroke-width="1"/>
+          <line x1="10" y1="6" x2="10" y2="14" stroke="currentColor" stroke-width="1"/>
+          <line x1="14" y1="6" x2="14" y2="14" stroke="currentColor" stroke-width="1"/>
+          <line x1="6" y1="14" x2="6" y2="16" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="10" y1="14" x2="10" y2="16" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="14" y1="14" x2="14" y2="16" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    eth: `<svg viewBox="0 0 20 20" class="detail-icon"><rect x="7" y="2" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <rect x="1" y="14" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <rect x="8" y="14" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <rect x="15" y="14" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <line x1="10" y1="6" x2="10" y2="10" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="3" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="3" y1="10" x2="3" y2="14" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="10" y1="10" x2="10" y2="14" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="17" y1="10" x2="17" y2="14" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    scsi:`<svg viewBox="0 0 20 20" class="detail-icon"><rect x="2" y="5" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <circle cx="7" cy="10" r="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <line x1="12" y1="10" x2="18" y2="10" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="16" y1="8" x2="18" y2="10" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="16" y1="12" x2="18" y2="10" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    fc:    `<svg viewBox="0 0 20 20" class="detail-icon"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <line x1="10" y1="3" x2="10" y2="7" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="10" y1="13" x2="10" y2="17" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="3" y1="10" x2="7" y2="10" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="13" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    // Physical Ethernet — plug icon
+    phyeth:`<svg viewBox="0 0 20 20" class="detail-icon" style="color:#1a7f37">
+            <rect x="7" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <line x1="9" y1="4" x2="9" y2="7" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="11" y1="4" x2="11" y2="7" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="10" y1="10" x2="10" y2="14" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="6" y="14" width="8" height="4" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    // Physical FC — SFP/HBA icon
+    phyfc: `<svg viewBox="0 0 20 20" class="detail-icon" style="color:#9a6700">
+            <rect x="3" y="6" width="14" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <circle cx="7"  cy="10" r="1.5" fill="currentColor"/>
+            <circle cx="13" cy="10" r="1.5" fill="currentColor"/>
+            <line x1="3" y1="10" x2="1" y2="10" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="17" y1="10" x2="19" y2="10" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="7" y1="6" x2="7" y2="3" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="13" y1="6" x2="13" y2="3" stroke="currentColor" stroke-width="1.5"/></svg>`,
+  };
+  return icons[type] || "";
+}
+
+// ── Action modal ──────────────────────────────────────────
+function confirmAction(lparId, name, action) {
+  const labels = { activate:"Activate", shutdown:"Power Off", softstop:"Soft Stop", restart:"Restart" };
+  const msgs   = {
+    activate: `Activate LPAR <strong>${name}</strong>?`,
+    shutdown: `<span style="color:var(--red)"><strong>Hard power off</strong></span> LPAR <strong>${name}</strong>?`,
+    softstop: `Graceful shutdown LPAR <strong>${name}</strong>?`,
+    restart:  `Restart LPAR <strong>${name}</strong>?`,
+  };
+  document.getElementById("lam-title").textContent = (labels[action] || action) + " LPAR";
+  document.getElementById("lam-msg").innerHTML = msgs[action] || `Perform ${action} on ${name}?`;
+  document.getElementById("lam-result").classList.add("hidden");
+  document.getElementById("lam-confirm-btn").onclick = () => runLparAction(lparId, action);
+  document.getElementById("lpar-action-modal").classList.remove("hidden");
+}
+
+async function runLparAction(lparId, action) {
+  const res = document.getElementById("lam-result");
+  res.className = "result-box info"; res.textContent = "Executing…"; res.classList.remove("hidden");
+  const hmcId = localHMCId || window.activeHMCId;
+  const r = await fetch(
+    `/api/hmcs/${hmcId}/managed-systems/${currentSystemId}/lpars/${encodeURIComponent(lparId)}/action`,
+    { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action}) }
+  );
+  const d = await r.json();
+  if (d.ok) {
+    res.className = "result-box success"; res.textContent = "✓ Action submitted";
+    setTimeout(() => { closeModal("lpar-action-modal"); loadLPARs(); }, 1500);
+  } else {
+    res.className = "result-box error"; res.textContent = "✗ " + d.error;
+  }
+}
+
+function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await initLocalSelector();
+  document.addEventListener("hmc-changed", e => {
+    const id = e.detail?.id;
+    localHMCId = id || null;
+    document.getElementById("local-hmc-selector").value = localHMCId || "";
+    if (localHMCId) loadSystems();
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,473 @@
+{% extends "base.html" %}
+{% block title %}Connect to HMC{% endblock %}
+{% block page_title %}Connect to HMC{% endblock %}
+{% block content %}
+
+<!-- ── Saved HMCs ── -->
+<div class="card">
+  <div class="card-header-row">
+    <div class="card-title">HMC Connections</div>
+    <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add HMC</button>
+  </div>
+  <table class="data-table" id="hmc-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>Host</th><th>User</th><th>Auth</th>
+        <th>API Session</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="hmc-tbody">
+      <tr><td colspan="6" class="muted center">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── SSH Keys ── -->
+<div class="card" id="ssh-keys">
+  <div class="card-header-row">
+    <div class="card-title">SSH Key Pairs (~/.ssh)</div>
+    <button class="btn btn-secondary btn-sm" onclick="openKeyGenModal()">+ Generate Key</button>
+  </div>
+  <table class="data-table" id="key-table">
+    <thead>
+      <tr><th>Key Name</th><th>Public Key (truncated)</th><th>Actions</th></tr>
+    </thead>
+    <tbody id="key-tbody">
+      <tr><td colspan="3" class="muted center">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ═══════════════ ADD HMC MODAL ═══════════════ -->
+<div class="modal-overlay hidden" id="add-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Add HMC Connection</span>
+      <button class="modal-close" onclick="closeModal('add-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Name <span class="req">*</span></label>
+        <input id="f-name" type="text" placeholder="prod-hmc-01" />
+      </div>
+      <div class="form-row">
+        <label>HMC Hostname / IP <span class="req">*</span></label>
+        <input id="f-host" type="text" placeholder="192.168.1.10" />
+      </div>
+      <div class="form-row">
+        <label>Username</label>
+        <input id="f-user" type="text" value="hscroot" />
+      </div>
+      <div class="form-row">
+        <label>SSH Port</label>
+        <input id="f-ssh-port" type="number" value="22" />
+      </div>
+      <div class="form-row">
+        <label>API Port (HMC REST)</label>
+        <input id="f-api-port" type="number" value="443" />
+      </div>
+      <div class="form-row">
+        <label>Auth Method</label>
+        <select id="f-auth" onchange="toggleAuthFields()">
+          <option value="ssh_key">SSH Key</option>
+          <option value="password">Password</option>
+        </select>
+      </div>
+      <div id="auth-key-section">
+        <div class="form-row">
+          <label>Private Key</label>
+          <select id="f-key-path"><option value="">— select —</option></select>
+        </div>
+      </div>
+      <div id="auth-pass-section" class="hidden">
+        <div class="form-row">
+          <label>SSH Password</label>
+          <input id="f-ssh-password" type="password" autocomplete="new-password" />
+        </div>
+      </div>
+      <div class="form-row">
+        <label>API Password (HMC REST)</label>
+        <input id="f-api-password" type="password" autocomplete="new-password" />
+      </div>
+      <div class="form-row">
+        <label>Notes</label>
+        <input id="f-notes" type="text" placeholder="optional" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveHMC()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ TEST / PUSH KEY MODAL ═══════════════ -->
+<div class="modal-overlay hidden" id="action-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="action-modal-title">HMC Action</span>
+      <button class="modal-close" onclick="closeModal('action-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="action-modal-body"></div>
+    </div>
+    <div class="modal-footer" id="action-modal-footer"></div>
+  </div>
+</div>
+
+<!-- ═══════════════ GENERATE KEY MODAL ═══════════════ -->
+<div class="modal-overlay hidden" id="keygen-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Generate SSH Key Pair</span>
+      <button class="modal-close" onclick="closeModal('keygen-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Key Name</label>
+        <input id="kg-name" type="text" value="id_deployaix" />
+      </div>
+      <div class="form-row">
+        <label>Key Type</label>
+        <select id="kg-type">
+          <option value="ed25519">ed25519 (recommended)</option>
+          <option value="rsa">RSA 4096</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Comment</label>
+        <input id="kg-comment" type="text" value="deployaix" />
+      </div>
+      <div class="form-row">
+        <label>Passphrase (optional)</label>
+        <input id="kg-pass" type="password" autocomplete="new-password" />
+      </div>
+      <div id="kg-result" class="hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('keygen-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="generateKey()">Generate</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allHMCs = [];
+let allKeys = [];
+
+async function loadHMCs() {
+  allHMCs = await fetch("/api/hmcs").then(r => r.json());
+  const tbody = document.getElementById("hmc-tbody");
+  if (!allHMCs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted center">No HMCs saved yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = allHMCs.map(h => `
+    <tr id="row-${h.id}">
+      <td>
+        <strong>${h.name}</strong>
+        <div class="row-sub">${h.notes || ''}</div>
+      </td>
+      <td>
+        ${h.host}
+        <div class="row-sub">SSH :${h.ssh_port} &nbsp;·&nbsp; API :${h.api_port}</div>
+      </td>
+      <td>${h.username}</td>
+      <td><span class="badge ${h.auth_method==='ssh_key'?'badge-blue':'badge-grey'}">${h.auth_method}</span></td>
+      <td class="session-cell" id="sess-${h.id}">
+        ${sessionBadge(h)}
+      </td>
+      <td class="action-cell">
+        <button class="btn btn-xs btn-primary"  onclick="openTestSSH('${h.id}')">Test SSH</button>
+        <button class="btn btn-xs btn-secondary" onclick="openPushKey('${h.id}')">Push Key</button>
+        <button class="btn btn-xs btn-secondary" onclick="openApiLogin('${h.id}')">API Login</button>
+        <button class="btn btn-xs btn-terminal"  onclick="openTerminal('${h.id}')">Terminal</button>
+        <button class="btn btn-xs btn-danger"    onclick="deleteHMC('${h.id}')">✕</button>
+      </td>
+    </tr>`).join("");
+  refreshHMCSelector(allHMCs);
+}
+
+function sessionBadge(h) {
+  if (!h.session_active) {
+    return '<span class="badge badge-grey">No session</span>';
+  }
+  return `<span class="badge badge-green" id="sess-badge-${h.id}">Active</span>
+          <button class="btn btn-xs btn-secondary" style="margin-left:4px"
+                  onclick="checkSession('${h.id}')">Check</button>
+          <button class="btn btn-xs btn-danger" style="margin-left:2px"
+                  onclick="logoutApi('${h.id}')">Logout</button>`;
+}
+
+async function checkSession(id) {
+  const cell = document.getElementById(`sess-${id}`);
+  cell.innerHTML = '<span class="muted" style="font-size:12px">Checking…</span>';
+  const d = await fetch(`/api/hmcs/${id}/api-status`).then(r => r.json());
+  if (d.active) {
+    cell.innerHTML = '<span class="badge badge-green">Active ✓</span>'
+      + `<button class="btn btn-xs btn-secondary" style="margin-left:4px" onclick="checkSession('${id}')">Check</button>`
+      + `<button class="btn btn-xs btn-danger" style="margin-left:2px" onclick="logoutApi('${id}')">Logout</button>`;
+    showToast("Session still active", "");
+  } else {
+    cell.innerHTML = `<span class="badge badge-red">Expired</span>
+      <button class="btn btn-xs btn-secondary" style="margin-left:4px" onclick="openApiLogin('${id}')">Re-login</button>`;
+    // update local state
+    const h = allHMCs.find(x => x.id === id);
+    if (h) h.session_active = false;
+    showToast("Session expired — please API Login again", "warn");
+  }
+}
+
+async function logoutApi(id) {
+  await fetch(`/api/hmcs/${id}/api-logout`, { method: "POST" });
+  const h = allHMCs.find(x => x.id === id);
+  if (h) h.session_active = false;
+  document.getElementById(`sess-${id}`).innerHTML =
+    '<span class="badge badge-grey">No session</span>';
+  showToast("API session cleared");
+}
+
+async function loadKeys() {
+  allKeys = await fetch("/api/ssh-keys").then(r => r.json());
+  const tbody = document.getElementById("key-tbody");
+  if (!allKeys.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="muted center">No key pairs found in ~/.ssh</td></tr>';
+    return;
+  }
+  tbody.innerHTML = allKeys.map(k => `
+    <tr>
+      <td><code>${k.name}</code></td>
+      <td class="pubkey-cell"><code>${(k.public_key||"").substring(0,72)}…</code></td>
+      <td>
+        <button class="btn btn-xs btn-secondary" onclick="copyPubKey('${k.name}')">Copy</button>
+      </td>
+    </tr>`).join("");
+  // populate key dropdown in add modal
+  const sel = document.getElementById("f-key-path");
+  sel.innerHTML = '<option value="">— select —</option>' +
+    allKeys.map(k => `<option value="${k.private_key_path}">${k.name}</option>`).join("");
+}
+
+function openAddModal() {
+  document.getElementById("add-modal").classList.remove("hidden");
+}
+
+function toggleAuthFields() {
+  const v = document.getElementById("f-auth").value;
+  document.getElementById("auth-key-section").classList.toggle("hidden", v !== "ssh_key");
+  document.getElementById("auth-pass-section").classList.toggle("hidden", v !== "password");
+}
+
+async function saveHMC() {
+  const body = {
+    name: v("f-name"), host: v("f-host"), username: v("f-user"),
+    ssh_port: v("f-ssh-port"), api_port: v("f-api-port"),
+    auth_method: v("f-auth"), key_path: v("f-key-path"),
+    api_password: v("f-api-password"), notes: v("f-notes"),
+  };
+  const r = await fetch("/api/hmcs", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  const data = await r.json();
+  if (data.error) { alert(data.error); return; }
+  closeModal("add-modal");
+  loadHMCs();
+}
+
+async function deleteHMC(id) {
+  if (!confirm("Remove this HMC?")) return;
+  await fetch(`/api/hmcs/${id}`, { method:"DELETE" });
+  loadHMCs();
+}
+
+// ── Test SSH ──
+function openTestSSH(id) {
+  const hmc = allHMCs.find(h=>h.id===id);
+  document.getElementById("action-modal-title").textContent = `Test SSH — ${hmc.name}`;
+  document.getElementById("action-modal-body").innerHTML = `
+    <div class="form-row"><label>Username</label><input id="ts-user" value="${hmc.username}" /></div>
+    <div class="form-row"><label>Password (if key auth fails)</label><input id="ts-pass" type="password" /></div>
+    <div id="ts-result" class="result-box hidden"></div>`;
+  document.getElementById("action-modal-footer").innerHTML = `
+    <button class="btn btn-secondary" onclick="closeModal('action-modal')">Close</button>
+    <button class="btn btn-primary" onclick="runTestSSH('${id}')">Test</button>`;
+  document.getElementById("action-modal").classList.remove("hidden");
+}
+
+async function runTestSSH(id) {
+  const hmc = allHMCs.find(h=>h.id===id);
+  const res = document.getElementById("ts-result");
+  res.className = "result-box info"; res.textContent = "Connecting…"; res.classList.remove("hidden");
+  const r = await fetch(`/api/hmcs/${id}/test-ssh`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ username: v("ts-user"), password: v("ts-pass"), key_path: hmc.key_path })
+  });
+  const d = await r.json();
+  if (d.ok) { res.className="result-box success"; res.textContent="✓ Connected\n"+d.version; }
+  else       { res.className="result-box error";   res.textContent="✗ "+d.error; }
+}
+
+// ── Push Key ──
+function openPushKey(id) {
+  const hmc = allHMCs.find(h=>h.id===id);
+  document.getElementById("action-modal-title").textContent = `Push SSH Key — ${hmc.name}`;
+  const keyOpts = allKeys.map(k=>`<option value="${k.public_key_path}">${k.name}.pub</option>`).join("");
+  document.getElementById("action-modal-body").innerHTML = `
+    <p class="muted">Install your public key on the HMC so future connections are passwordless.</p>
+    <div class="form-row"><label>Username</label><input id="pk-user" value="${hmc.username}" /></div>
+    <div class="form-row"><label>Password (required first time)</label><input id="pk-pass" type="password" /></div>
+    <div class="form-row"><label>Public Key to push</label>
+      <select id="pk-key">${keyOpts}</select></div>
+    <div id="pk-result" class="result-box hidden"></div>`;
+  document.getElementById("action-modal-footer").innerHTML = `
+    <button class="btn btn-secondary" onclick="closeModal('action-modal')">Close</button>
+    <button class="btn btn-primary" onclick="runPushKey('${id}')">Push Key</button>`;
+  document.getElementById("action-modal").classList.remove("hidden");
+}
+
+async function runPushKey(id) {
+  const res = document.getElementById("pk-result");
+  res.className="result-box info"; res.textContent="Pushing key…"; res.classList.remove("hidden");
+  const r = await fetch(`/api/hmcs/${id}/push-key`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ username:v("pk-user"), password:v("pk-pass"), public_key_path:v("pk-key") })
+  });
+  const d = await r.json();
+  if (d.ok) { res.className="result-box success"; res.textContent="✓ "+d.message; }
+  else       { res.className="result-box error";   res.textContent="✗ "+d.error; }
+}
+
+// ── API Login ──
+function openApiLogin(id) {
+  const hmc = allHMCs.find(h=>h.id===id);
+  document.getElementById("action-modal-title").textContent = `HMC REST API Login — ${hmc.name}`;
+  document.getElementById("action-modal-body").innerHTML = `
+    <p class="muted">Authenticate with the HMC REST API (port ${hmc.api_port}). Session will be stored for this run.</p>
+    <div class="form-row"><label>Username</label><input id="al-user" value="${hmc.username}" /></div>
+    <div class="form-row"><label>Password</label><input id="al-pass" type="password" /></div>
+    <div id="al-result" class="result-box hidden"></div>`;
+  document.getElementById("action-modal-footer").innerHTML = `
+    <button class="btn btn-secondary" onclick="closeModal('action-modal')">Close</button>
+    <button class="btn btn-primary" onclick="runApiLogin('${id}')">Login</button>`;
+  document.getElementById("action-modal").classList.remove("hidden");
+}
+
+async function runApiLogin(id) {
+  const res = document.getElementById("al-result");
+  res.className="result-box info"; res.textContent="Logging in…"; res.classList.remove("hidden");
+  const r = await fetch(`/api/hmcs/${id}/api-login`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ username:v("al-user"), password:v("al-pass") })
+  });
+  const d = await r.json();
+  if (d.ok) {
+    res.className="result-box success";
+    res.textContent="✓ Session established (" + d.session_id.substring(0,16) + "…)";
+    // Update session badge in the table row without a full reload
+    const h = allHMCs.find(x => x.id === id);
+    if (h) h.session_active = true;
+    const cell = document.getElementById(`sess-${id}`);
+    if (cell) cell.innerHTML = sessionBadge({ id, session_active: true });
+    showToast("API session active", "");
+  } else {
+    res.className="result-box error"; res.textContent="✗ "+d.error;
+  }
+}
+
+// ── Terminal ──
+function openTerminal(id) {
+  const hmc = allHMCs.find(h=>h.id===id);
+  window.location.href = `/connect#terminal?hmc=${id}`;
+  openSSHTerminalModal(id);
+}
+
+// ── Key gen ──
+function openKeyGenModal() {
+  document.getElementById("kg-result").classList.add("hidden");
+  document.getElementById("keygen-modal").classList.remove("hidden");
+}
+
+async function generateKey() {
+  const r = await fetch("/api/ssh-keys/generate", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key_name:v("kg-name"), key_type:v("kg-type"),
+                           comment:v("kg-comment"), passphrase:v("kg-pass") })
+  });
+  const d = await r.json();
+  const res = document.getElementById("kg-result");
+  res.classList.remove("hidden");
+  if (d.ok) {
+    res.className="result-box success";
+    res.innerHTML=`✓ Key generated:<br><code>${d.private_key_path}</code><br><small>${d.public_key}</small>`;
+    loadKeys();
+  } else {
+    res.className="result-box error"; res.textContent="✗ "+d.error;
+  }
+}
+
+function copyPubKey(name) {
+  const k = allKeys.find(k=>k.name===name);
+  navigator.clipboard.writeText(k.public_key);
+  showToast("Public key copied to clipboard");
+}
+
+function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+function v(id) { return document.getElementById(id)?.value || ""; }
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadHMCs();
+  loadKeys();
+});
+</script>
+
+<!-- ═══════════════ SSH TERMINAL (Xterm.js) ═══════════════ -->
+<div class="modal-overlay hidden" id="terminal-modal">
+  <div class="modal modal-xl">
+    <div class="modal-header">
+      <span id="term-title">SSH Terminal</span>
+      <button class="modal-close" onclick="closeTerminal()">✕</button>
+    </div>
+    <div id="terminal-container"></div>
+  </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+<script>
+let term, socket, termOpen = false;
+
+function openSSHTerminalModal(hmcId) {
+  const hmc = allHMCs.find(h=>h.id===hmcId);
+  document.getElementById("term-title").textContent = `SSH Terminal — ${hmc.name} (${hmc.host})`;
+  document.getElementById("terminal-modal").classList.remove("hidden");
+
+  if (!term) {
+    term = new Terminal({ cursorBlink:true, fontSize:13, fontFamily:"'Menlo','Monaco','Courier New',monospace",
+                          theme:{background:"#1e1e1e",foreground:"#d4d4d4"} });
+    term.open(document.getElementById("terminal-container"));
+  }
+
+  socket = io();
+  socket.on("connect", () => {
+    socket.emit("ssh_connect", {
+      hmc_id: hmcId,
+      username: hmc.username,
+      key_path: hmc.key_path || null,
+    });
+  });
+  socket.on("ssh_output", d => term.write(d.data));
+  socket.on("ssh_error",  d => term.writeln("\r\n\x1b[31m[ERROR] "+d.msg+"\x1b[0m\r\n"));
+  term.onData(d => socket.emit("ssh_input", {data:d}));
+  termOpen = true;
+}
+
+function closeTerminal() {
+  document.getElementById("terminal-modal").classList.add("hidden");
+  if (socket) { socket.emit("ssh_disconnect_req"); socket.disconnect(); socket=null; }
+  if (term)   { term.clear(); }
+  termOpen = false;
+}
+</script>
+{% endblock %}

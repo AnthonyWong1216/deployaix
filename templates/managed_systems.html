@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Managed Systems{% endblock %}
+{% block page_title %}Managed Systems{% endblock %}
+{% block content %}
+
+<!-- ── Toolbar: HMC selector top-left, then controls ── -->
+<div class="toolbar toolbar-stacked">
+  <div class="toolbar-row">
+    <div class="toolbar-group">
+      <label class="label-inline">HMC:</label>
+      <select id="local-hmc-selector" onchange="onHMCChange()" title="Select HMC">
+        <option value="">— select HMC —</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label class="label-inline">Method:</label>
+      <div class="method-toggle" id="method-toggle">
+        <button class="method-btn active" id="btn-auto" onclick="setMethod('auto')">Auto</button>
+        <button class="method-btn"        id="btn-ssh"  onclick="setMethod('ssh')">SSH <span class="method-hint">faster</span></button>
+        <button class="method-btn"        id="btn-api"  onclick="setMethod('api')">REST API</button>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="loadSystems()">↻ Refresh</button>
+  </div>
+  <div id="method-note" class="method-note muted"></div>
+</div>
+
+<div class="card">
+  <div class="card-header-row">
+    <div class="card-title">Power Servers</div>
+    <span id="method-badge" class="badge badge-grey" style="display:none"></span>
+  </div>
+  <table class="data-table" id="sys-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Model / Serial</th>
+        <th>State</th>
+        <th>Managed by HMC</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="sys-tbody">
+      <tr><td colspan="5" class="muted center">Select an HMC above and click Refresh</td></tr>
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let localHMCId  = null;
+let localHMCs   = [];
+let activeMethod = "auto";
+
+const methodNotes = {
+  auto: "Auto: tries SSH first (fast), falls back to REST API if no SSH key.",
+  ssh:  "SSH: runs lssyscfg directly — typically 1–3 s. Requires key trust.",
+  api:  "REST API: queries HMC HTTPS — may take 10–30 s. Requires API Login.",
+};
+
+// ── Populate the local HMC dropdown ──────────────────────
+async function initLocalSelector() {
+  localHMCs = await fetch("/api/hmcs").then(r => r.json());
+  const sel = document.getElementById("local-hmc-selector");
+  sel.innerHTML = '<option value="">— select HMC —</option>' +
+    localHMCs.map(h => {
+      const sess = h.session_active
+        ? ` [API ✓]` : (h.key_path ? ` [SSH key]` : "");
+      return `<option value="${h.id}">${h.name} (${h.host})${sess}</option>`;
+    }).join("");
+
+  // Sync with global selector
+  if (window.activeHMCId) {
+    sel.value = window.activeHMCId;
+    localHMCId = window.activeHMCId;
+  }
+}
+
+function onHMCChange() {
+  localHMCId = document.getElementById("local-hmc-selector").value || null;
+  // Keep global selector in sync
+  const globalSel = document.getElementById("hmc-selector");
+  if (globalSel) globalSel.value = localHMCId || "";
+  if (localHMCId) {
+    window.activeHMCId = localHMCId;
+    sessionStorage.setItem("activeHMCId", localHMCId);
+    loadSystems();
+  }
+}
+
+function setMethod(m) {
+  activeMethod = m;
+  document.querySelectorAll(".method-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById("btn-" + m).classList.add("active");
+  document.getElementById("method-note").textContent = methodNotes[m];
+}
+
+// ── Load systems ──────────────────────────────────────────
+async function loadSystems() {
+  const hmcId = localHMCId || window.activeHMCId;
+  if (!hmcId) { showToast("Select an HMC first", "warn"); return; }
+
+  const tbody = document.getElementById("sys-tbody");
+  const badge = document.getElementById("method-badge");
+  tbody.innerHTML = '<tr><td colspan="5" class="muted center">Loading…</td></tr>';
+  badge.style.display = "none";
+
+  const hmc = localHMCs.find(h => h.id === hmcId);
+  const hmcLabel = hmc
+    ? `<strong>${hmc.name}</strong> <span class="muted">(${hmc.host})</span>`
+    : hmcId;
+
+  const url = `/api/hmcs/${hmcId}/managed-systems?method=${activeMethod}`;
+  const r = await fetch(url);
+  const d = await r.json();
+
+  // Show which method was actually used
+  if (d.method) {
+    const methodLabels = { ssh: "via SSH", api: "via REST API",
+                           ssh_failed: "SSH failed" };
+    badge.textContent = methodLabels[d.method] || d.method;
+    badge.className = "badge " + (d.method === "ssh" ? "badge-blue"
+                                : d.method === "api" ? "badge-green" : "badge-red");
+    badge.style.display = "";
+  }
+
+  if (!d.ok) {
+    if (d.need_login) {
+      const isSshFail = d.method === "ssh_failed";
+      tbody.innerHTML = `<tr><td colspan="5" class="center" style="padding:20px">
+        <span class="muted">${isSshFail
+          ? "SSH failed and no REST API session is active."
+          : "No HMC REST API session active."}</span><br><br>
+        <a href="/connect" class="btn btn-primary btn-sm">
+          ${isSshFail ? "Go to Connect → check SSH key / API Login" : "Go to Connect → API Login"}
+        </a>
+      </td></tr>`;
+    } else {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted center error-text">✗ ${d.error}</td></tr>`;
+    }
+    return;
+  }
+  if (!d.data.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted center">No managed systems found</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = d.data.map(s => `
+    <tr>
+      <td><strong>${s.name || "—"}</strong></td>
+      <td class="muted">${s.model || "—"}</td>
+      <td><span class="badge ${stateClass(s.state)}">${s.state || "unknown"}</span></td>
+      <td class="hmc-cell">${hmcLabel}</td>
+      <td>
+        <a class="btn btn-xs btn-secondary" href="/lpars?hmc=${hmcId}&system=${encodeURIComponent(s.id)}">View LPARs</a>
+      </td>
+    </tr>`).join("");
+}
+
+function stateClass(s) {
+  if (!s) return "badge-grey";
+  s = s.toLowerCase();
+  if (s.includes("operating") || s.includes("running")) return "badge-green";
+  if (s.includes("off") || s.includes("no power"))      return "badge-red";
+  return "badge-grey";
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  setMethod("auto");        // show initial note
+  await initLocalSelector();
+  if (localHMCId) loadSystems();
+
+  // Keep in sync if global selector changes
+  document.addEventListener("hmc-changed", e => {
+    const id = e.detail?.id;
+    localHMCId = id || null;
+    document.getElementById("local-hmc-selector").value = localHMCId || "";
+    if (localHMCId) loadSystems();
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeployAIX — {% block title %}HMC Manager{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+</head>
+<body>
+
+<!-- ═══════════════════ SIDEBAR NAV ═══════════════════ -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <span class="brand-icon">⬡</span>
+    <span class="brand-text">DeployAIX</span>
+  </div>
+
+  <div class="nav-section-label">HMC</div>
+  <a href="/connect"    class="nav-item {% if request.path=='/connect' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M14 1H2a1 1 0 00-1 1v8a1 1 0 001 1h5v2H5v1h6v-1H9v-2h5a1 1 0 001-1V2a1 1 0 00-1-1zm-1 8H3V3h10v6z"/></svg>
+    Connect to HMC
+  </a>
+
+  <div class="nav-section-label">Power Servers</div>
+  <a href="/managed-systems" class="nav-item {% if request.path=='/managed-systems' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v2a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm0 5a1 1 0 011-1h10a1 1 0 011 1v2a1 1 0 01-1 1H3a1 1 0 01-1-1V8zm1 4a1 1 0 000 2h10a1 1 0 000-2H3z"/></svg>
+    Managed Systems
+  </a>
+  <a href="/lpars" class="nav-item {% if request.path=='/lpars' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"/></svg>
+    LPARs
+  </a>
+  <a href="/virtual-networks" class="nav-item {% if request.path=='/virtual-networks' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1a6 6 0 110 12A6 6 0 018 2zm-1 2v3H4v2h3v3h2V9h3V7h-3V4H7z"/></svg>
+    Virtual Networks
+  </a>
+  <a href="/storage" class="nav-item {% if request.path=='/storage' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M1 3.5C1 2.12 4.13 1 8 1s7 1.12 7 2.5v2C15 6.88 11.87 8 8 8S1 6.88 1 5.5v-2zm0 4C1 6.12 4.13 5 8 5s7 1.12 7 2.5v2C15 9.88 11.87 11 8 11S1 9.88 1 8.5v-2zm0 4C1 10.12 4.13 9 8 9s7 1.12 7 2.5v1C15 13.88 11.87 15 8 15S1 13.88 1 12.5v-1z"/></svg>
+    Storage
+  </a>
+
+  <div class="nav-section-label">Operations</div>
+  <a href="/jobs" class="nav-item {% if request.path=='/jobs' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM3 8l3 3 5-6"/></svg>
+    Jobs &amp; Tasks
+  </a>
+
+  <div class="sidebar-footer">
+    <span id="hmc-status-dot" class="status-dot"></span>
+    <span id="hmc-status-label">No HMC connected</span>
+  </div>
+</nav>
+
+<!-- ═══════════════════ MAIN CONTENT ═══════════════════ -->
+<main id="content">
+  <div class="topbar">
+    <button id="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+    <h1 class="page-title">{% block page_title %}{% endblock %}</h1>
+    <div class="topbar-right">
+      <select id="hmc-selector" title="Active HMC"></select>
+    </div>
+  </div>
+
+  <div class="page-body">
+    {% block content %}{% endblock %}
+  </div>
+</main>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

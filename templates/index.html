@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+{% block content %}
+<div class="dashboard-grid">
+
+  <div class="card">
+    <div class="card-title">HMC Connections</div>
+    <div class="stat-big" id="dash-hmc-count">—</div>
+    <div class="card-sub">Saved profiles</div>
+    <a href="/connect" class="btn btn-sm btn-secondary mt-1">Manage</a>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Managed Systems</div>
+    <div class="stat-big" id="dash-sys-count">—</div>
+    <div class="card-sub">Power servers</div>
+    <a href="/managed-systems" class="btn btn-sm btn-secondary mt-1">View</a>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Active LPARs</div>
+    <div class="stat-big" id="dash-lpar-count">—</div>
+    <div class="card-sub">Running partitions</div>
+    <a href="/lpars" class="btn btn-sm btn-secondary mt-1">View</a>
+  </div>
+
+  <div class="card">
+    <div class="card-title">SSH Keys</div>
+    <div class="stat-big" id="dash-key-count">—</div>
+    <div class="card-sub">Local key pairs</div>
+    <a href="/connect#ssh-keys" class="btn btn-sm btn-secondary mt-1">Manage</a>
+  </div>
+
+</div>
+
+<div class="card mt-2">
+  <div class="card-title">Quick Connect</div>
+  <p class="muted">Select an HMC from the top-right selector, then open a terminal or browse LPARs.</p>
+  <a href="/connect" class="btn btn-primary">+ Add HMC Connection</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const hmcs = await fetch("/api/hmcs").then(r=>r.json());
+  document.getElementById("dash-hmc-count").textContent = hmcs.length;
+  const keys = await fetch("/api/ssh-keys").then(r=>r.json());
+  document.getElementById("dash-key-count").textContent = keys.length;
+});
+</script>
+{% endblock %}

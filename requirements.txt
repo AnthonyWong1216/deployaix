@@ -1,22 +1,7 @@
-# AIX LPAR Deployment Script Dependencies
-# Install with: pip install -r requirements.txt
-
-# SSH connection library for HMC access
-paramiko>=3.0.0
-
-# YAML configuration file parsing
-PyYAML>=6.0
-
-# Optional: For enhanced logging and monitoring
-colorlog>=6.7.0
-
-# Optional: For Excel file processing (if using Excel input files)
-openpyxl>=3.1.0
-pandas>=2.0.0
-
-# Optional: For JSON configuration files
-# (included in Python standard library)
-
-# Optional: For web-based configuration interface
-flask>=2.3.0
-flask-cors>=4.0.0 
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+paramiko==3.4.0
+requests==2.31.0
+urllib3==2.2.1
+python-dotenv==1.0.1
+cryptography==42.0.8
