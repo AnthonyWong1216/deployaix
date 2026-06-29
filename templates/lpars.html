@@ -278,14 +278,14 @@ function renderDetail(d) {
   // ── CPU values ──
   const currProcs  = cpu.curr_procs      || "—";
   const currUnits  = cpu.curr_proc_units || "—";
-  const minProcs   = cpu.min_procs       || "—";
-  const maxProcs   = cpu.max_procs       || "—";
-  const minUnits   = cpu.min_proc_units  || "—";
-  const maxUnits   = cpu.max_proc_units  || "—";
+  const minProcs   = cpu.curr_min_procs       || "—";
+  const maxProcs   = cpu.curr_max_procs       || "—";
+  const minUnits   = cpu.curr_min_proc_units  || "—";
+  const maxUnits   = cpu.curr_max_proc_units  || "—";
   const runProcs   = cpu.run_procs       || "—";
   const pendProcs  = cpu.pend_procs      || "—";
   const sharing    = cpu.sharing_mode    || "—";
-  const uncapWt    = cpu.uncap_weight    || "—";
+  const uncapWt    = cpu.run_uncap_weight    || "—";
   const isShared   = sharing && sharing.toLowerCase().includes("shared");
 
   const procPct = (parseFloat(currProcs)||0) / (parseFloat(maxProcs)||1) * 100;
@@ -338,29 +338,18 @@ function renderDetail(d) {
     </div>`;
   }).join("") || none;
 
-  // ── Physical Ethernet (HEA) ──
-  const phyEthRows = (d.phyeth||[]).map(e => `
+  // ── Physical Adapters ──
+  const phyioRows = (d.phyio||[]).map(e => `
     <div class="adapter-row">
-      ${svgIcon("phyeth")}
+      ${svgIcon("phyio")}
       <div class="adapter-info">
-        <span class="adapter-label">HEA  Adapter ${e.adapter_id}  Port ${e.port_id}</span>
-        <span class="adapter-detail">Group ${e.port_group||"—"}
-          &nbsp;·&nbsp; MAC <code>${fmtMac(e.mac)}</code></span>
+        <span class="adapter-label">Physical Location ${e.drc_name}  Description ${e.description}</span>
+        <span class="adapter-detail">Feature Codes ${e.feature_codes||"—"}
+          &nbsp;·&nbsp; </code></span>
       </div>
     </div>`).join("");
 
-  // ── SR-IOV ──
-  const sriovRows = (d.sriov||[]).map(e => `
-    <div class="adapter-row">
-      ${svgIcon("phyeth")}
-      <div class="adapter-info">
-        <span class="adapter-label">SR-IOV  Adapter ${e.adapter_id}  LP ${e.logical_port_id}</span>
-        <span class="adapter-detail">Capacity ${e.capacity||"—"}%
-          &nbsp;·&nbsp; MAC <code>${fmtMac(e.mac)}</code></span>
-      </div>
-    </div>`).join("");
-
-  const phyEthAll = (phyEthRows + sriovRows) || none;
+  //const phyioAll = (phyioRows) || none;
 
   // ── Physical FC ──
   const phyFcRows = (d.phyfc||[]).map(e => `
@@ -400,11 +389,11 @@ function renderDetail(d) {
       </div>` : ""}
       <div class="detail-kv" style="margin-top:10px">
         <span>Curr vCPUs</span>   <strong>${currProcs}</strong>
-        <span>Proc Units</span>   <strong>${currUnits}</strong>
+        <span>Curr Proc Units</span>   <strong>${currUnits}</strong>
         <span>Min vCPUs</span>    <strong>${minProcs}</strong>
         <span>Max vCPUs</span>    <strong>${maxProcs}</strong>
-        <span>Min Units</span>    <strong>${minUnits}</strong>
-        <span>Max Units</span>    <strong>${maxUnits}</strong>
+        <span>Min Proc Units</span>    <strong>${minUnits}</strong>
+        <span>Max Proc Units</span>    <strong>${maxUnits}</strong>
         <span>Run vCPUs</span>    <strong>${runProcs}</strong>
         <span>Pend vCPUs</span>   <strong>${pendProcs}</strong>
         ${isShared ? `<span>Uncap Weight</span><strong>${uncapWt}</strong>` : ""}
@@ -421,7 +410,7 @@ function renderDetail(d) {
       </div>
       <div class="detail-kv" style="margin-top:10px">
         <span>Curr MB</span>   <strong>${currMem}</strong>
-        <span>Run MB</span>    <strong>${runMem}</strong>
+        <span>Pending MB</span>    <strong>${runMem}</strong>
         <span>Min MB</span>    <strong>${minMem}</strong>
         <span>Max MB</span>    <strong>${maxMem}</strong>
       </div>
@@ -433,10 +422,10 @@ function renderDetail(d) {
       <div class="adapter-list">${vethRows}</div>
     </div>
 
-    <!-- ── Physical Ethernet (HEA / SR-IOV) ── -->
+    <!-- ── Physical Adapter ── -->
     <div class="detail-tile detail-tile-wide">
-      <div class="detail-tile-header">${svgIcon("phyeth")} <span>Physical Ethernet (HEA / SR-IOV)</span></div>
-      <div class="adapter-list">${phyEthAll}</div>
+      <div class="detail-tile-header">${svgIcon("phyio")} <span>Physical IO adapters</span></div>
+      <div class="adapter-list">${phyioRows}</div>
     </div>
 
     <!-- ── Virtual SCSI ── -->
@@ -523,7 +512,7 @@ function svgIcon(type) {
             <line x1="3" y1="10" x2="7" y2="10" stroke="currentColor" stroke-width="1.5"/>
             <line x1="13" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="1.5"/></svg>`,
     // Physical Ethernet — plug icon
-    phyeth:`<svg viewBox="0 0 20 20" class="detail-icon" style="color:#1a7f37">
+    phyio:`<svg viewBox="0 0 20 20" class="detail-icon" style="color:#1a7f37">
             <rect x="7" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
             <line x1="9" y1="4" x2="9" y2="7" stroke="currentColor" stroke-width="1.5"/>
             <line x1="11" y1="4" x2="11" y2="7" stroke="currentColor" stroke-width="1.5"/>

@@ -352,11 +352,11 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
                 f'lshwres -r proc --level lpar -m {m} --filter {f} '
                 f'-F lpar_name:curr_procs:curr_proc_units:curr_sharing_mode:'
                 f'curr_min_procs:curr_max_procs:curr_min_proc_units:curr_max_proc_units:'
-                f'run_procs:pend_procs:uncap_weight'
+                f'run_procs:pend_procs:run_uncap_weight'
             ),
             "mem": (
                 f'lshwres -r mem --level lpar -m {m} --filter {f} '
-                f'-F lpar_name:curr_mem:run_mem:pend_mem:min_mem:max_mem'
+                f'-F lpar_name:curr_mem:run_mem:pend_mem:run_min_mem:curr_max_mem'
             ),
             "veth": (
                 f'lshwres -r virtualio --rsubtype eth --level lpar -m {m} --filter {f} '
@@ -370,18 +370,10 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
                 f'lshwres -r virtualio --rsubtype fc --level lpar -m {m} --filter {f} '
                 f'-F lpar_name:slot_num:wwpns:remote_lpar_name:remote_slot_num'
             ),
-            "phyeth": (
-                f'lshwres -r hea --level port -m {m} --filter {f} '
-                f'-F lpar_name:adapter_id:port_group:lhea_port_id:mac_addr'
-            ),
-            "sriov": (
-                f'lshwres -r sriov --rsubtype logport --level lpar -m {m} --filter {f} '
-                f'-F lpar_name:adapter_id:logical_port_id:mac_addr:capacity'
-            ),
-            "phyfc": (
-                f'lshwres -r hca --level port -m {m} --filter {f} '
-                f'-F lpar_name:adapter_id:port_index:wwpn'
-            ),
+            "phyio": (
+                f'lshwres -r io --rsubtype slot -m {m} --filter {f} '
+                f'-F lpar_name:drc_name:description:feature_codes'
+            )
         }
     )
     cpu_r    = raw["cpu"]
@@ -389,9 +381,7 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
     veth_r   = raw["veth"]
     vscsi_r  = raw["vscsi"]
     vfc_r    = raw["vfc"]
-    phyeth_r = raw["phyeth"]
-    sriov_r  = raw["sriov"]
-    phyfc_r  = raw["phyfc"]
+    phyio_r  = raw["phyio"]
 
     def parse_lines(res, fields):
         """Parse colon-separated lines; skip lines that start with error text."""
@@ -409,22 +399,20 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
             rows.append(dict(zip(fields, parts)))
         return rows
 
-    cpu_fields    = ["lpar_name","curr_procs","curr_proc_units","sharing_mode",
-                     "min_procs","max_procs","min_proc_units","max_proc_units",
+    cpu_fields    = ["lpar_name","curr_procs","curr_proc_units","curr_sharing_mode",
+                     "curr_min_procs","curr_max_procs","curr_min_proc_units","curr_max_proc_units",
                      "run_procs","pend_procs","uncap_weight"]
     mem_fields    = ["lpar_name","curr_mem","run_mem","pend_mem","min_mem","max_mem"]
     veth_fields   = ["lpar_name","slot","pvid","addl_vlans","ieee","mac"]
     vscsi_fields  = ["lpar_name","slot","remote_lpar","remote_slot"]
     vfc_fields    = ["lpar_name","slot","wwpns","remote_lpar","remote_slot"]
-    phyeth_fields = ["lpar_name","adapter_id","port_group","port_id","mac"]
-    sriov_fields  = ["lpar_name","adapter_id","logical_port_id","mac","capacity"]
-    phyfc_fields  = ["lpar_name","adapter_id","port_index","wwpn"]
+    phyio_fields  = ["lpar_name","drc_name","description","feature_codes"]
 
     # Collect per-resource errors (None = success/no-data, string = error msg)
     raw_results = [
         ("cpu",    cpu_r),  ("mem",  mem_r),
         ("veth",   veth_r), ("vscsi",vscsi_r), ("vfc",  vfc_r),
-        ("phyeth", phyeth_r),("sriov",sriov_r), ("phyfc",phyfc_r),
+        ("phyio", phyio_r)
     ]
     errors = {k: v.get("error") for k, v in raw_results if not v.get("ok")}
 
@@ -438,9 +426,7 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
         "veth":  parse_lines(veth_r,   veth_fields),
         "vscsi": parse_lines(vscsi_r,  vscsi_fields),
         "vfc":   parse_lines(vfc_r,    vfc_fields),
-        "phyeth":parse_lines(phyeth_r, phyeth_fields),
-        "sriov": parse_lines(sriov_r,  sriov_fields),
-        "phyfc": parse_lines(phyfc_r,  phyfc_fields),
+        "phyio": parse_lines(phyio_r, phyio_fields),
         "errors": errors,
     }
     if debug:
