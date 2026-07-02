@@ -20,6 +20,10 @@
     </div>
     <button class="btn btn-primary" onclick="loadLPARs()">↻ Refresh</button>
     <span id="lpar-method-badge" class="badge badge-grey" style="display:none"></span>
+    <!-- Inside your lpars.html script section, just before closing the toolbar-row -->
+    <div class="toolbar-group">
+    <button class="btn btn-primary" onclick="redirectToCreateLPAR()">Create LPAR</button>
+    </div>
   </div>
 </div>
 
@@ -30,11 +34,11 @@
     <thead>
       <tr>
         <th>ID</th><th>Name</th><th>Type</th><th>Profile</th>
-        <th>State</th><th>Actions</th>
+        <th>State</th><th>OS Version</th><th>IP Address</th><th>Actions</th>
       </tr>
     </thead>
     <tbody id="lpar-tbody">
-      <tr><td colspan="6" class="muted center">Select an HMC and managed system above</td></tr>
+      <tr><td colspan="8" class="muted center">Select an HMC and managed system above</td></tr>
     </tbody>
   </table>
 </div>
@@ -100,6 +104,10 @@ async function initLocalSelector() {
   if (localHMCId) await loadSystems();
 }
 
+function redirectToCreateLPAR() {
+    window.location.href = "/create_lpar?hmc=" + encodeURIComponent(localHMCId || "");
+}
+
 function onHMCChange() {
   localHMCId = document.getElementById("local-hmc-selector").value || null;
   const globalSel = document.getElementById("hmc-selector");
@@ -135,7 +143,7 @@ async function loadLPARs() {
 
   const tbody = document.getElementById("lpar-tbody");
   const badge = document.getElementById("lpar-method-badge");
-  tbody.innerHTML = '<tr><td colspan="6" class="muted center">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="muted center">Loading…</td></tr>';
   badge.style.display = "none";
 
   const r = await fetch(`/api/hmcs/${hmcId}/managed-systems/${sysId}/lpars?method=auto`);
@@ -148,16 +156,23 @@ async function loadLPARs() {
   }
 
   if (!d.ok) {
-    tbody.innerHTML = `<tr><td colspan="6" class="center" style="padding:20px">
+    tbody.innerHTML = `<tr><td colspan="8" class="center" style="padding:20px">
       <span class="muted">${d.error || "Failed to load LPARs"}</span><br><br>
       <a href="/connect" class="btn btn-primary btn-sm">Go to Connect page</a>
     </td></tr>`;
     return;
   }
   if (!d.data.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted center">No LPARs found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="muted center">No LPARs found</td></tr>';
     return;
   }
+
+  // Sort the data by lpar_id numerically before mapping
+  const sortedData = d.data.sort((a, b) => {
+    if (!a.lpar_id || !b.lpar_id) return 0; // Ensure both have lpar_id for comparison
+    // Convert to numbers before comparing
+    return Number(a.lpar_id) - Number(b.lpar_id);
+  });
 
   tbody.innerHTML = d.data.map(p => `
     <tr>
@@ -170,6 +185,8 @@ async function loadLPARs() {
       <td class="muted">${p.type || "—"}</td>
       <td class="muted" style="font-size:12px">${p.profile || "—"}</td>
       <td><span class="badge ${lparStateClass(p.state)}">${p.state || "unknown"}</span></td>
+      <td class="muted" style="font-size:12px">${p.os_version || "—"}</td>
+      <td class="muted" style="font-size:12px">${p.ip_address || "—"}</td>
       <td class="action-cell">
         <button class="btn btn-xs btn-outline-icon" title="Details"
                 onclick="openDetail('${esc(p.id)}','${esc(p.name)}')">&#9432;</button>
@@ -179,6 +196,8 @@ async function loadLPARs() {
         <button class="btn btn-xs btn-secondary" onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','restart')">↺</button>
       </td>
     </tr>`).join("");
+  
+  populateManagedSystems(); 
 }
 
 function esc(s) { return (s||"").replace(/'/g,"\\'"); }
@@ -332,7 +351,28 @@ function renderDetail(d) {
       ${svgIcon("fc")}
       <div class="adapter-info">
         <span class="adapter-label">vFC  Slot ${e.slot}</span>
-        ${wwpns.map(w=>`<span class="adapter-detail wwpn">WWPN <code>${fmtWWPN(w)}</code></span>`).join("")}
+${wwpns.map(w => `
+  <span class="adapter-detail wwpn">
+    WWPN 
+    <code title="Copy Formatted" onclick="copyToClipboard('${fmtWWPN(w)}')" style="cursor:pointer" data-copy="${fmtWWPN(w)}">
+      ${fmtWWPN(w)} 
+      <svg viewBox="0 0 24 24" width="24" height="24" style="display:inline-block; vertical-align:middle; margin-left:6px; opacity:0.6;" fill="none" stroke="currentColor" stroke-width="4">
+        <rect x="9" y="9" width="6" height="6"></rect>
+        <circle cx="9.5" cy="9.5" r="1.5"></circle>
+        <circle cx="14.5" cy="14.5" r="1.5"></circle>
+      </svg>
+    </code>
+    or 
+    <code title="Copy Raw" onclick="copyToClipboard('${w}')" style="cursor:pointer" data-copy="${w}">
+      ${w} 
+      <svg viewBox="0 0 24 24" width="24" height="24" style="display:inline-block; vertical-align:middle; margin-left:6px; opacity:0.6;" fill="none" stroke="currentColor" stroke-width="4">
+        <rect x="9" y="9" width="6" height="6"></rect>
+        <circle cx="9.5" cy="9.5" r="1.5"></circle>
+        <circle cx="14.5" cy="14.5" r="1.5"></circle>
+      </svg>
+    </code>
+  </span>`).join("")}
+
         <span class="adapter-detail">→ <strong>${e.remote_lpar||"—"}</strong> slot ${e.remote_slot||"—"}</span>
       </div>
     </div>`;
@@ -358,6 +398,7 @@ function renderDetail(d) {
       <div class="adapter-info">
         <span class="adapter-label">FC HBA  Adapter ${e.adapter_id}  Port ${e.port_index}</span>
         <span class="adapter-detail">WWPN <code>${fmtWWPN(e.wwpn||"—")}</code></span>
+        <span class="adapter-detail">WWPN <code>Without ":" ${e.wwpn}</code></span>
       </div>
     </div>`).join("") || none;
 
@@ -565,6 +606,23 @@ async function runLparAction(lparId, action) {
 }
 
 function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+
+function copyToClipboard(text) {
+  const el = document.createElement('textarea');
+  el.value = text;
+  document.body.appendChild(el);
+  el.select();
+  document.execCommand('copy');
+  document.body.removeChild(el);
+  
+  // Optional: provide some visual feedback
+  const container = event.target.closest('.copy-container');
+  if (container) {
+    const icon = container.querySelector('.copy-icon');
+    icon.style.color = 'green';
+    setTimeout(() => { icon.style.color = 'currentColor'; }, 1000);
+  }
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   await initLocalSelector();

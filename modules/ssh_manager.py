@@ -160,6 +160,104 @@ class SSHManager:
         return results
 
     # ──────────────────────────────────────────────────────
+    # LPAR creation
+    # ──────────────────────────────────────────────────────
+
+    def create_lpar(self, host, port=22, username="hscroot",
+                    key_path=None, managed_system="", params=None) -> dict:
+        """Build and run mksyscfg -r lpar on the HMC via SSH.
+
+        Returns {"ok": True, "output": ..., "command": ...} on success,
+        or {"ok": False, "error": ..., "command": ...} on failure.
+        """
+        p = params or {}
+
+        # ── Core identity ─────────────────────────────────
+        parts = [
+            f'name={p["name"]}',
+            f'lpar_id={p["lpar_id"]}',
+            f'lpar_env={p.get("lpar_env","aixlinux")}',
+            f'profile_name={p.get("profile_name","default_profile")}',
+            f'boot_mode={p.get("boot_mode","norm")}',
+            f'lpar_proc_compat_mode={p.get("lpar_proc_compat_mode","default")}',
+            f'max_virtual_slots={p.get("max_virtual_slots","100")}',
+            f'conn_monitoring={p.get("conn_monitoring","1")}',
+            f'sync_curr_profile={p.get("sync_curr_profile","1")}',
+            f'allow_perf_collection={p.get("allow_perf_collection","1")}',
+        ]
+
+        # ── Memory (GB → MB conversion) ───────────────────
+        def gb_to_mb(val):
+            try:
+                return str(int(float(val)) * 1024)
+            except (TypeError, ValueError):
+                return str(val)
+
+        parts += [
+            f'min_mem={gb_to_mb(p.get("min_mem"))}',
+            f'desired_mem={gb_to_mb(p.get("desired_mem"))}',
+            f'max_mem={gb_to_mb(p.get("max_mem"))}',
+        ]
+
+        # ── Processor ─────────────────────────────────────
+        parts += [
+            f'proc_mode={p.get("proc_mode","shared")}',
+            f'min_proc_units={p.get("min_proc_units","0.1")}',
+            f'desired_proc_units={p.get("desired_proc_units","0.5")}',
+            f'max_proc_units={p.get("max_proc_units","1")}',
+            f'min_procs={p.get("min_procs","1")}',
+            f'desired_procs={p.get("desired_procs","1")}',
+            f'max_procs={p.get("max_procs","1")}',
+            f'sharing_mode={p.get("sharing_mode","uncap")}',
+        ]
+        if p.get("proc_mode", "shared") == "shared":
+            if p.get("uncap_weight"):
+                parts.append(f'uncap_weight={p["uncap_weight"]}')
+
+        # ── Virtual adapters ──────────────────────────────
+        # vETH / vSCSI: virtual_eth_adapters="spec1","spec2"
+        # vFC:          \"virtual_fc_adapters=\"\"spec1\"\",\"\"spec2\"\"\"
+        BQ   = '\\"'           # one backslash-quote:  \"
+        BQBQ = '\\"' + '\\"'   # two backslash-quotes: \"\"
+
+        if p.get("virtual_eth_adapters"):
+            eth = ','.join('"' + s + '"' for s in p["virtual_eth_adapters"])
+            parts.append('virtual_eth_adapters=' + eth)
+        if p.get("virtual_fc_adapters"):
+            fc_specs = (BQBQ + ',' + BQBQ).join(p["virtual_fc_adapters"])
+            parts.append(BQ + 'virtual_fc_adapters=' + BQBQ + fc_specs + BQBQ + BQ)
+        if p.get("virtual_scsi_adapters"):
+            scsi = ','.join('"' + s + '"' for s in p["virtual_scsi_adapters"])
+            parts.append('virtual_scsi_adapters=' + scsi)
+
+        param_str = ",".join(parts)
+        command = f'mksyscfg -r lpar -m "{managed_system}" -i "{param_str}"'
+
+        logger.info("create_lpar command: %s", command)
+        result = self.run_hmc_command(
+            host=host, port=port, username=username,
+            key_path=key_path, command=command,
+        )
+        result["command"] = command
+
+        # ── Interpret mksyscfg result ─────────────────────
+        # mksyscfg exits 0 on success (stdout empty).
+        # Failures may arrive as: exit != 0, or exit 0 with an error
+        # message on stdout/stderr containing "error" (case-insensitive).
+        if result.get("ok"):
+            output = result.get("output", "")
+            stderr = result.get("stderr", "")
+            combined = (output + " " + stderr).lower()
+            if "error" in combined:
+                # Pull the most informative text available
+                error_text = output or stderr
+                result["ok"]    = False
+                result["error"] = error_text.strip()
+            else:
+                result["message"] = output or "LPAR created successfully."
+        return result
+
+    # ──────────────────────────────────────────────────────
     # Connection testing
     # ──────────────────────────────────────────────────────
 

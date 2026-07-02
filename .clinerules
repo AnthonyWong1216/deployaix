@@ -1,0 +1,7 @@
+# Strict Code Modification Rules
+
+## Critical Constraints
+- When using tools to write or edit files (`write_to_file`, `replace_in_file`, etc.), you must ONLY provide the exact source code required for the file.
+- NEVER include your internal thoughts, "Thinking" process, planning, step-by-step reasoning, or chat explanations INSIDE the file content parameters.
+- Any conversational text, thinking logs, or summaries MUST be kept strictly in your chat response, NEVER injected into the user's source code files.
+- Ensure the code blocks written to files start exactly with the correct code syntax and contain no markdown wrappers like ```html inside the actual file write payload.

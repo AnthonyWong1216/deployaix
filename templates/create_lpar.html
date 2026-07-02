@@ -1,0 +1,883 @@
+{% extends "base.html" %}
+
+{% block title %}Create LPAR{% endblock %}
+{% block page_title %}Create LPAR{% endblock %}
+
+{% block content %}
+<!-- ── Form Card ── -->
+<div class="card shadow-sm">
+  <div class="card-title" style="font-size: 1.2rem; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 20px;">
+    New LPAR Configuration
+  </div>
+  
+  <div class="card-body p-4">
+    <style>
+        /* Custom UI Enhancements */
+        .form-section-container {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            margin-bottom: 30px;
+        }
+        .form-section-title {
+            font-size: 0.85rem;
+            font-weight: 800;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--accent);
+            color: var(--text);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .form-section-title::before {
+            content: "";
+            display: inline-block;
+            width: 4px;
+            height: 16px;
+            background: var(--accent);
+            border-radius: 2px;
+        }
+        .form-label {
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: 0.85rem;
+            color: var(--muted);
+            display: block;
+        }
+        .form-control, .form-select {
+            width: 100%;
+            height: 38px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 12px;
+            transition: all 0.2s ease;
+            font-size: 14px;
+        }
+        .form-control:focus, .form-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(44,95,204,.1);
+            background: #fff;
+            outline: none;
+        }
+        .btn-group-footer {
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+            margin-top: 10px;
+        }
+        .row { display: flex; flex-wrap: wrap; gap: 12px; }
+        .col-12 { flex: 0 0 100%; }
+        .col-md-3 { flex: 0 0 calc(25% - 9px); }
+        .col-md-4 { flex: 0 0 calc(33.333% - 8px); }
+        .col-md-6 { flex: 0 0 calc(50% - 6px); }
+        .g-3 { gap: 12px; }
+        
+        /* Adapter section toggle */
+        .adapter-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+            padding: 12px;
+            background: #fff;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .adapter-toggle:hover {
+            background: #f8f9fa;
+        }
+        .adapter-toggle input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        .adapter-toggle label {
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            margin: 0;
+            flex: 1;
+        }
+        .adapter-fields {
+            display: none;
+            margin-top: 12px;
+            padding: 16px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+        .adapter-fields.active {
+            display: block;
+        }
+        .adapter-item {
+            padding: 12px;
+            margin-bottom: 12px;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            position: relative;
+        }
+        .adapter-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text);
+        }
+        .btn-remove {
+            background: var(--red);
+            color: #fff;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-add {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+        .btn-add:hover { opacity: 0.9; }
+        .btn-remove:hover { opacity: 0.9; }
+        
+        .inline-btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            margin-left: 8px;
+            background: var(--green);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .inline-btn:hover { opacity: 0.9; }
+
+        /* Size profile quick-select */
+        .size-profile-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .size-profile-bar .profile-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            white-space: nowrap;
+        }
+        .btn-profile {
+            padding: 6px 18px;
+            border-radius: 20px;
+            border: 2px solid var(--border);
+            background: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            color: var(--text);
+        }
+        .btn-profile:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-profile.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        small.hint {
+            display: block;
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+    </style>
+
+    <form id="lpar-form" action="/create_lpar" method="POST" onsubmit="return submitForm(event)">
+        <!-- Hidden: pass selected HMC id to the backend -->
+        <input type="hidden" name="hmc_id" id="form-hmc-id">
+        
+        <!-- Section 1: Identity -->
+        <div class="form-section-container">
+            <h5 class="form-section-title">1. Identity & Environment</h5>
+            <div class="row g-3">
+                <!-- HMC selector -->
+                <div class="col-md-6">
+                    <label class="form-label">HMC <span style="color:red;">*</span></label>
+                    <select id="local-hmc-selector" class="form-select" onchange="handleHMCSelection()" required>
+                        <option value="">— select HMC —</option>
+                    </select>
+                </div>
+
+                <!-- Managed System -->
+                <div class="col-md-6">
+                    <label class="form-label">Managed System <span style="color:red;">*</span></label>
+                    <select name="managed_systems" id="managed-systems-select" class="form-select"
+                            onchange="onManagedSystemChange()" required>
+                        <option value="">— select managed system —</option>
+                    </select>
+                </div>
+
+                <!-- LPAR Name -->
+                <div class="col-md-6">
+                    <label class="form-label">LPAR Name <span style="color:red;">*</span></label>
+                    <input type="text" name="name" id="lpar-name" class="form-control" placeholder="e.g. TEMP01_S051" required>
+                </div>
+                
+                <!-- LPAR ID -->
+                <div class="col-md-3">
+                    <label class="form-label">LPAR ID <span style="color:red;">*</span></label>
+                    <input type="number" name="lpar_id" id="lpar-id" class="form-control" placeholder="10" min="1" required>
+                </div>
+                
+                <!-- LPAR Env -->
+                <div class="col-md-3">
+                    <label class="form-label">LPAR Env <span style="color:red;">*</span></label>
+                    <select name="lpar_env" id="lpar-env" class="form-select" required>
+                        <option value="">— select —</option>
+                        <option value="aixlinux" selected>aixlinux</option>
+                        <option value="vioserver">vioserver</option>
+                        <option value="os400">os400</option>
+                    </select>
+                </div>
+                
+                <!-- Profile Name -->
+                <div class="col-md-6">
+                    <label class="form-label">Profile Name <span style="color:red;">*</span></label>
+                    <input type="text" name="profile_name" id="profile-name" class="form-control" placeholder="default_profile" value="default_profile" required>
+                </div>
+
+                <!-- Boot Mode -->
+                <div class="col-md-3">
+                    <label class="form-label">Boot Mode</label>
+                    <select name="boot_mode" class="form-select">
+                        <option value="norm" selected>norm (Normal)</option>
+                        <option value="sms">sms (SMS)</option>
+                        <option value="dd">dd (Diagnostic)</option>
+                        <option value="of">of (Open Firmware)</option>
+                        <option value="iol">iol (I/O Loop)</option>
+                    </select>
+                </div>
+
+                <!-- Proc Compat Mode -->
+                <div class="col-md-3">
+                    <label class="form-label">Proc Compat Mode</label>
+                    <select name="lpar_proc_compat_mode" class="form-select">
+                        <option value="default" selected>default</option>
+                        <option value="POWER6">POWER6</option>
+                        <option value="POWER6+">POWER6+</option>
+                        <option value="POWER7">POWER7</option>
+                        <option value="POWER8">POWER8</option>
+                        <option value="POWER9">POWER9</option>
+                        <option value="POWER10">POWER10</option>
+                    </select>
+                </div>
+
+                <!-- Max Virtual Slots -->
+                <div class="col-md-3">
+                    <label class="form-label">Max Virtual Slots</label>
+                    <input type="number" name="max_virtual_slots" class="form-control" value="100" min="2" max="65534">
+                </div>
+
+                <!-- Flags row -->
+                <div class="col-12" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;padding-top:4px;">
+                    <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="conn_monitoring" value="1" checked style="width:16px;height:16px;">
+                        Connection Monitoring
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="sync_curr_profile" value="1" checked style="width:16px;height:16px;">
+                        Sync Current Profile
+                    </label>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Section 2: Processor Configuration -->
+        <div class="form-section-container">
+            <h5 class="form-section-title">2. Processor Configuration</h5>
+
+            <!-- Quick-size profile selector -->
+            <div class="size-profile-bar">
+                <span class="profile-label">Quick Size:</span>
+                <button type="button" id="btn-profile-small"  class="btn-profile" onclick="applyProfile('small')">Small</button>
+                <button type="button" id="btn-profile-medium" class="btn-profile" onclick="applyProfile('medium')">Medium</button>
+                <button type="button" id="btn-profile-big"    class="btn-profile" onclick="applyProfile('big')">Big</button>
+            </div>
+
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Proc Mode <span style="color:red;">*</span></label>
+                    <select name="proc_mode" id="proc-mode" class="form-select" required onchange="onProcModeChange()">
+                        <option value="shared" selected>Shared</option>
+                        <option value="ded">Dedicated</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Sharing Mode</label>
+                    <select name="sharing_mode" id="sharing-mode" class="form-select">
+                        <option value="uncap" selected>uncap (Uncapped)</option>
+                        <option value="cap">cap (Capped)</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Uncap Weight</label>
+                    <input type="number" name="uncap_weight" id="uncap_weight" class="form-control" value="128" min="0" max="255">
+                </div>
+                <div class="col-md-3" style="display:flex;align-items:flex-end;padding-bottom:4px;">
+                    <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="shared_proc_pool_util_auth" id="shared_proc_pool_util_auth" value="1" checked style="width:16px;height:16px;">
+                        Shared Pool Auth
+                    </label>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Min Proc Units <span style="color:red;">*</span></label>
+                    <input type="number" step="0.1" name="min_proc_units" id="min_proc_units" class="form-control" value="0.2" min="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Desired Proc Units <span style="color:red;">*</span></label>
+                    <input type="number" step="0.1" name="desired_proc_units" id="desired_proc_units" class="form-control" value="0.4" min="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Max Proc Units <span style="color:red;">*</span></label>
+                    <input type="number" step="0.1" name="max_proc_units" id="max_proc_units" class="form-control" value="1" min="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Min Procs (vCPU) <span style="color:red;">*</span></label>
+                    <input type="number" name="min_procs" id="min_procs" class="form-control" value="1" min="1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Desired Procs (vCPU) <span style="color:red;">*</span></label>
+                    <input type="number" name="desired_procs" id="desired_procs" class="form-control" value="1" min="1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Max Procs (vCPU) <span style="color:red;">*</span></label>
+                    <input type="number" name="max_procs" id="max_procs" class="form-control" value="1" min="1" required>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Memory -->
+        <div class="form-section-container">
+            <h5 class="form-section-title">3. Memory Allocation (GB)</h5>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Minimum Memory (GB) <span style="color:red;">*</span></label>
+                    <input type="number" name="min_mem" id="min_mem" class="form-control" min="1" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Desired Memory (GB) <span style="color:red;">*</span></label>
+                    <input type="number" name="desired_mem" id="desired_mem" class="form-control" min="1" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Maximum Memory (GB) <span style="color:red;">*</span></label>
+                    <input type="number" name="max_mem" id="max_mem" class="form-control" min="1" required>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 4: Virtual Adapters -->
+        <div class="form-section-container">
+            <h5 class="form-section-title">4. Virtual Adapters</h5>
+            
+            <!-- Virtual Ethernet -->
+            <div class="adapter-toggle" onclick="toggleAdapter('veth')">
+                <input type="checkbox" id="veth-enable" onclick="event.stopPropagation(); toggleAdapter('veth')">
+                <label for="veth-enable">Virtual Ethernet Adapters</label>
+            </div>
+            <div id="veth-fields" class="adapter-fields">
+                <div id="veth-container"></div>
+                <button type="button" class="btn-add" onclick="addVethAdapter()">+ Add Virtual Ethernet</button>
+            </div>
+
+            <!-- Virtual FC -->
+            <div class="adapter-toggle" onclick="toggleAdapter('vfc')">
+                <input type="checkbox" id="vfc-enable" onclick="event.stopPropagation(); toggleAdapter('vfc')">
+                <label for="vfc-enable">Virtual Fibre Channel Adapters</label>
+            </div>
+            <div id="vfc-fields" class="adapter-fields">
+                <div id="vfc-container"></div>
+                <button type="button" class="btn-add" onclick="addVfcAdapter()">+ Add Virtual FC</button>
+            </div>
+
+            <!-- Virtual SCSI -->
+            <div class="adapter-toggle" onclick="toggleAdapter('vscsi')">
+                <input type="checkbox" id="vscsi-enable" onclick="event.stopPropagation(); toggleAdapter('vscsi')">
+                <label for="vscsi-enable">Virtual SCSI Adapters</label>
+            </div>
+            <div id="vscsi-fields" class="adapter-fields">
+                <div id="vscsi-container"></div>
+                <button type="button" class="btn-add" onclick="addVscsiAdapter()">+ Add Virtual SCSI</button>
+            </div>
+        </div>
+
+        <!-- Result banner -->
+        <div id="create-result" style="display:none;margin-bottom:16px;padding:14px 16px;border-radius:6px;font-size:13px;line-height:1.6;"></div>
+
+        <div class="btn-group-footer d-flex justify-content-end gap-3" style="display:flex;gap:12px;justify-content:flex-end;">
+            <a href="/lpars" class="btn btn-secondary">Cancel</a>
+            <button type="submit" id="submit-btn" class="btn btn-primary px-5" style="padding:10px 40px;">Create LPAR</button>
+        </div>
+    </form>
+  </div>
+</div>
+
+<script>
+let localHMCId = null;
+let vethCount = 0;
+let vfcCount = 0;
+let vscsiCount = 0;
+
+// ── Populate HMC selector on load ────────────────────────
+async function initPage() {
+    const hmcSel = document.getElementById('local-hmc-selector');
+
+    // Fetch all saved HMCs from the store
+    const hmcs = await fetch('/api/hmcs').then(r => r.json()).catch(() => []);
+
+    hmcSel.innerHTML = '<option value="">— select HMC —</option>' +
+        hmcs.map(h => `<option value="${h.id}">${h.name} (${h.host})</option>`).join('');
+
+    // Pre-select from URL param or globally active HMC
+    const params = new URLSearchParams(window.location.search);
+    const preHmc = params.get('hmc') || window.activeHMCId
+                   || sessionStorage.getItem('activeHMCId');
+    if (preHmc) {
+        hmcSel.value = preHmc;
+        localHMCId = preHmc;
+        await handleHMCSelection();
+    }
+}
+
+// ── HMC change: load managed systems ─────────────────────
+async function handleHMCSelection() {
+    const hmcId = document.getElementById('local-hmc-selector').value || null;
+    localHMCId = hmcId;
+    document.getElementById('form-hmc-id').value = hmcId || '';
+
+    const formSel = document.getElementById('managed-systems-select');
+    formSel.innerHTML = '<option value="">— select managed system —</option>';
+    viosLpars = [];
+    refreshViosSelects();
+
+    if (!hmcId) return;
+
+    formSel.innerHTML = '<option value="">Loading…</option>';
+    try {
+        const res = await fetch(`/api/hmcs/${hmcId}/managed-systems?method=auto`);
+        const d   = await res.json();
+
+        if (d.ok && d.data && d.data.length) {
+            formSel.innerHTML = '<option value="">— select managed system —</option>' +
+                d.data.map(s => `<option value="${s.id}">${s.name || s.id}</option>`).join('');
+        } else {
+            formSel.innerHTML = `<option value="">${d.error || 'No systems found'}</option>`;
+        }
+    } catch (err) {
+        console.error('Failed to fetch systems:', err);
+        formSel.innerHTML = '<option value="">Error loading systems</option>';
+    }
+}
+
+// ── Managed System change: load VIOS list ────────────────
+function onManagedSystemChange() {
+    const sysId = document.getElementById('managed-systems-select').value;
+    viosLpars = [];
+    refreshViosSelects();
+    if (localHMCId && sysId) loadViosLpars(localHMCId, sysId);
+}
+
+// ── VIOS LPAR list (cached) ───────────────────────────────
+let viosLpars = []; // [{name, lpar_id}]
+
+async function loadViosLpars(hmcId, sysId) {
+    viosLpars = [];
+    try {
+        const res = await fetch(`/api/hmcs/${hmcId}/managed-systems/${sysId}/lpars?method=auto`);
+        const d   = await res.json();
+        if (d.ok && d.data) {
+            // Keep only vioserver LPARs; fall back to all if none tagged
+            const vios = d.data.filter(l => (l.type || '').toLowerCase().includes('vio'));
+            viosLpars = (vios.length ? vios : d.data).map(l => ({
+                name:    l.name    || l.id,
+                lpar_id: l.lpar_id || '',
+            }));
+        }
+    } catch (e) { /* silently ignore — user can still type */ }
+    refreshViosSelects();
+}
+
+// Rebuild every VIOS <select> already in the DOM
+function refreshViosSelects() {
+    document.querySelectorAll('select.vios-select').forEach(sel => {
+        const prev = sel.value;
+        sel.innerHTML = viosSelectOptions();
+        if (prev) sel.value = prev;
+    });
+}
+
+function viosSelectOptions() {
+    if (!viosLpars.length) {
+        return '<option value="">— select VIOS —</option>';
+    }
+    return '<option value="">— select VIOS —</option>' +
+        viosLpars.map(v =>
+            `<option value="${v.name}">${v.name}${v.lpar_id ? ' (' + v.lpar_id + ')' : ''}</option>`
+        ).join('');
+}
+
+// ── Toggle adapter section ────────────────────────────────
+function toggleAdapter(type) {
+    const checkbox = document.getElementById(`${type}-enable`);
+    const fields = document.getElementById(`${type}-fields`);
+    
+    checkbox.checked = !checkbox.checked;
+    
+    if (checkbox.checked) {
+        fields.classList.add('active');
+    } else {
+        fields.classList.remove('active');
+    }
+}
+
+// ── Virtual Ethernet Adapter ──────────────────────────────
+// mksyscfg format: slot/ieee/pvid/addl_vlans/is_trunk/is_required/vswitch/trunk_priority/allowed_os_macaddr
+function addVethAdapter() {
+    const id = ++vethCount;
+    const container = document.getElementById('veth-container');
+    const html = `
+        <div class="adapter-item" id="veth-${id}">
+            <div class="adapter-item-header">
+                <span>Virtual Ethernet #${id}</span>
+                <button type="button" class="btn-remove" onclick="removeAdapter('veth-${id}')">Remove</button>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Client Slot <span style="color:red;">*</span></label>
+                    <input type="number" name="veth_slot[]" class="form-control" placeholder="5" min="1">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Port VLAN ID (PVID)</label>
+                    <input type="number" name="veth_pvid[]" class="form-control" placeholder="5" min="1" max="4094">
+                    <small class="hint">Untagged VLAN on this port</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Virtual Switch</label>
+                    <input type="text" name="veth_vswitch[]" class="form-control" placeholder="ETHERNET0">
+                    <small class="hint">Leave blank for default</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Additional VLANs</label>
+                    <input type="text" name="veth_addl_vlans[]" class="form-control" placeholder="100,200">
+                    <small class="hint">Comma-separated tagged VLANs</small>
+                </div>
+                <div class="col-12" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="veth_ieee[]" value="1" style="width:15px;height:15px;">
+                        IEEE 802.1Q (Tagged)
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="veth_trunk[]" value="1" style="width:15px;height:15px;">
+                        Trunk Adapter
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;font-weight:600;color:var(--muted);cursor:pointer;">
+                        <input type="checkbox" name="veth_required[]" value="1" style="width:15px;height:15px;">
+                        Required
+                    </label>
+                </div>
+            </div>
+        </div>
+    `;
+    container.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Virtual FC Adapter ────────────────────────────────────
+// mksyscfg format: slot/client/vios_lpar_id/vios_lpar_name/vios_slot/wwpn1,wwpn2/0
+function addVfcAdapter() {
+    const id = ++vfcCount;
+    const container = document.getElementById('vfc-container');
+    const wwpn1 = generateWWPN();
+    const wwpn2 = wwpnPlusOne(wwpn1);
+    const html = `
+        <div class="adapter-item" id="vfc-${id}">
+            <div class="adapter-item-header">
+                <span>Virtual FC #${id}</span>
+                <button type="button" class="btn-remove" onclick="removeAdapter('vfc-${id}')">Remove</button>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Client Slot <span style="color:red;">*</span></label>
+                    <input type="number" name="vfc_slot[]" class="form-control" placeholder="10" min="1">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">VIOS Name <span style="color:red;">*</span></label>
+                    <select name="vfc_vios[]" class="form-select vios-select">
+                        ${viosSelectOptions()}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">VIOS Slot <span style="color:red;">*</span></label>
+                    <input type="number" name="vfc_vios_slot[]" class="form-control" placeholder="450" min="1">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Require Dedicated WWPN</label>
+                    <select name="vfc_require_dedicated[]" class="form-select">
+                        <option value="0" selected>0 — No</option>
+                        <option value="1">1 — Yes</option>
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">WWPN 1 <span style="color:red;">*</span></label>
+                    <div style="display:flex;gap:8px;">
+                        <input type="text" name="vfc_wwpn1[]" id="vfc-wwpn1-${id}" class="form-control"
+                               value="${wwpn1}" oninput="syncWwpn2('${id}')">
+                        <button type="button" class="inline-btn" onclick="regenWWPN('vfc-wwpn1-${id}','${id}')">↻</button>
+                    </div>
+                    <small class="hint">e.g. C0:51:AA:B0:C0:60:59:01 — click ↻ to regenerate</small>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">WWPN 2 <span style="color:var(--muted);font-weight:400;font-size:11px;">(WWPN 1 + 1, auto)</span></label>
+                    <input type="text" name="vfc_wwpn2[]" id="vfc-wwpn2-${id}" class="form-control"
+                           value="${wwpn2}" readonly style="background:#f0f2f5;color:var(--muted);">
+                    <small class="hint">Derived from WWPN 1 last octet + 1</small>
+                </div>
+            </div>
+        </div>
+    `;
+    container.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Virtual SCSI Adapter ──────────────────────────────────
+function addVscsiAdapter() {
+    const id = ++vscsiCount;
+    const container = document.getElementById('vscsi-container');
+    const html = `
+        <div class="adapter-item" id="vscsi-${id}">
+            <div class="adapter-item-header">
+                <span>Virtual SCSI #${id}</span>
+                <button type="button" class="btn-remove" onclick="removeAdapter('vscsi-${id}')">Remove</button>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Client Slot</label>
+                    <input type="number" name="vscsi_slot[]" class="form-control" placeholder="50" min="1">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">VIOS Name</label>
+                    <select name="vscsi_vios[]" class="form-select vios-select">
+                        ${viosSelectOptions()}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">VIOS Slot (Server)</label>
+                    <input type="number" name="vscsi_vios_slot[]" class="form-control" placeholder="60" min="1">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Adapter Type</label>
+                    <select name="vscsi_type[]" class="form-select">
+                        <option value="client" selected>Client</option>
+                        <option value="server">Server</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    `;
+    container.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Remove adapter ────────────────────────────────────────
+function removeAdapter(id) {
+    document.getElementById(id)?.remove();
+}
+
+// ── WWPN helpers ──────────────────────────────────────────
+function generateWWPN() {
+    const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+    return `10:00:00:${hex()}:${hex()}:${hex()}:${hex()}:${hex()}`.toUpperCase();
+}
+
+// Increment the last octet of a colon-separated WWPN by 1
+function wwpnPlusOne(wwpn) {
+    const parts = wwpn.split(':');
+    if (parts.length !== 8) return wwpn;
+    const last = (parseInt(parts[7], 16) + 1) & 0xFF;
+    parts[7] = last.toString(16).padStart(2, '0').toUpperCase();
+    return parts.join(':');
+}
+
+// Regenerate WWPN 1 and immediately recompute WWPN 2
+function regenWWPN(wwpn1Id, adapterIdx) {
+    const newWwpn1 = generateWWPN();
+    document.getElementById(wwpn1Id).value = newWwpn1;
+    syncWwpn2(adapterIdx);
+}
+
+// Called on every keystroke in WWPN 1 — keeps WWPN 2 in sync
+function syncWwpn2(adapterIdx) {
+    const w1 = document.getElementById(`vfc-wwpn1-${adapterIdx}`).value.trim();
+    document.getElementById(`vfc-wwpn2-${adapterIdx}`).value = wwpnPlusOne(w1);
+}
+
+// ── Size profiles ─────────────────────────────────────────
+const SIZE_PROFILES = {
+    small:  { min_procs: 1, desired_procs: 1, max_procs: 1,
+               min_proc_units: 0.1, desired_proc_units: 0.2, max_proc_units: 1,
+               min_mem: 1, desired_mem: 4,  max_mem: 8  },
+    medium: { min_procs: 1, desired_procs: 2, max_procs: 2,
+               min_proc_units: 0.1, desired_proc_units: 2,   max_proc_units: 2,
+               min_mem: 1, desired_mem: 16, max_mem: 16 },
+    big:    { min_procs: 1, desired_procs: 4, max_procs: 4,
+               min_proc_units: 0.1, desired_proc_units: 4,   max_proc_units: 4,
+               min_mem: 1, desired_mem: 32, max_mem: 32 },
+};
+
+let activeProfile = null;
+
+function applyProfile(size) {
+    const p = SIZE_PROFILES[size];
+    if (!p) return;
+
+    // Processor vCPU
+    document.getElementById('min_procs').value         = p.min_procs;
+    document.getElementById('desired_procs').value     = p.desired_procs;
+    document.getElementById('max_procs').value         = p.max_procs;
+    // Processor units
+    document.getElementById('min_proc_units').value    = p.min_proc_units;
+    document.getElementById('desired_proc_units').value= p.desired_proc_units;
+    document.getElementById('max_proc_units').value    = p.max_proc_units;
+    // Memory (GB)
+    document.getElementById('min_mem').value           = p.min_mem;
+    document.getElementById('desired_mem').value       = p.desired_mem;
+    document.getElementById('max_mem').value           = p.max_mem;
+
+    // If proc mode is shared, set uncap weight to 128
+    const procMode = document.getElementById('proc-mode').value;
+    if (procMode === 'shared') {
+        document.getElementById('uncap_weight').value = 128;
+    }
+
+    // Highlight active button
+    ['small','medium','big'].forEach(s => {
+        document.getElementById(`btn-profile-${s}`)
+            .classList.toggle('active', s === size);
+    });
+    activeProfile = size;
+}
+
+// ── Proc mode change: auto-set uncap weight ───────────────
+function onProcModeChange() {
+    const mode = document.getElementById('proc-mode').value;
+    const uncapEl = document.getElementById('uncap_weight');
+    if (mode === 'shared') {
+        if (!uncapEl.value) uncapEl.value = 128;
+    } else {
+        // dedicated — uncap weight not applicable, clear it
+        uncapEl.value = '';
+    }
+}
+
+// ── Form submit — validate then POST via fetch ────────────
+async function submitForm(event) {
+    event.preventDefault();
+
+    // Validation
+    const managedSystem = document.getElementById('managed-systems-select').value;
+    const lparName      = document.getElementById('lpar-name').value.trim();
+    const lparId        = document.getElementById('lpar-id').value;
+    const lparEnv       = document.getElementById('lpar-env').value;
+    const profileName   = document.getElementById('profile-name').value.trim();
+
+    if (!managedSystem)        { alert('Please select a Managed System'); return false; }
+    if (!lparName)             { alert('LPAR Name is required'); return false; }
+    if (!lparId || lparId < 1) { alert('Valid LPAR ID is required'); return false; }
+    if (!lparEnv)              { alert('LPAR Environment is required'); return false; }
+    if (!profileName)          { alert('Profile Name is required'); return false; }
+
+    const minMem = parseInt(document.querySelector('[name="min_mem"]').value);
+    const desMem = parseInt(document.querySelector('[name="desired_mem"]').value);
+    const maxMem = parseInt(document.querySelector('[name="max_mem"]').value);
+    if (minMem > desMem || desMem > maxMem) { alert('Memory: Min ≤ Desired ≤ Max'); return false; }
+
+    const minProc = parseFloat(document.querySelector('[name="min_proc_units"]').value);
+    const desProc = parseFloat(document.querySelector('[name="desired_proc_units"]').value);
+    const maxProc = parseFloat(document.querySelector('[name="max_proc_units"]').value);
+    if (minProc > desProc || desProc > maxProc) { alert('Processor Units: Min ≤ Desired ≤ Max'); return false; }
+
+    // Sync hidden HMC id field
+    document.getElementById('form-hmc-id').value = localHMCId || '';
+
+    // Submit
+    const btn     = document.getElementById('submit-btn');
+    const banner  = document.getElementById('create-result');
+    btn.disabled  = true;
+    btn.textContent = 'Creating…';
+    banner.style.display = 'none';
+
+    try {
+        const res  = await fetch('/create_lpar', {
+            method: 'POST',
+            body: new FormData(document.getElementById('lpar-form')),
+        });
+        const data = await res.json();
+
+        banner.style.display = 'block';
+        if (data.ok) {
+            banner.style.background = '#dafbe1';
+            banner.style.border     = '1px solid #1a7f37';
+            banner.style.color      = '#1a7f37';
+            banner.innerHTML =
+                `<strong>&#10003; LPAR created successfully!</strong><br>
+                <span style="color:#1f2328;">${escHtml(data.message || '')}</span><br>
+                <span style="font-size:12px;color:#555;word-break:break-all;margin-top:6px;display:block;">
+                    <strong>Command:</strong> <code>${escHtml(data.command || '')}</code>
+                </span>`;
+        } else {
+            banner.style.background = '#ffebe9';
+            banner.style.border     = '1px solid #d1242f';
+            banner.style.color      = '#d1242f';
+            const stderrLine = data.stderr
+                ? `<br><span style="font-size:12px;color:#555;word-break:break-all;margin-top:4px;display:block;">
+                       <strong>HMC stderr:</strong> <code>${escHtml(data.stderr)}</code>
+                   </span>`
+                : '';
+            banner.innerHTML =
+                `<strong>&#10007; Creation failed</strong><br>
+                <span style="color:#1f2328;">${escHtml(data.error || 'Unknown error')}</span>
+                ${stderrLine}
+                <span style="font-size:12px;color:#555;word-break:break-all;margin-top:6px;display:block;">
+                    <strong>Command:</strong> <code>${escHtml(data.command || '')}</code>
+                </span>`;
+        }
+    } catch (err) {
+        banner.style.display    = 'block';
+        banner.style.background = '#ffebe9';
+        banner.style.border     = '1px solid #d1242f';
+        banner.style.color      = '#d1242f';
+        banner.textContent      = `Network error: ${err.message}`;
+    } finally {
+        btn.disabled    = false;
+        btn.textContent = 'Create LPAR';
+        banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    return false;
+}
+
+function escHtml(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+document.addEventListener('DOMContentLoaded', initPage);
+</script>
+{% endblock %}

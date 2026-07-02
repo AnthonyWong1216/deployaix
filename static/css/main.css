@@ -527,3 +527,21 @@ code { font-family: "Menlo","Monaco","Courier New",monospace; font-size: 12px; }
   #content { margin-left: 0; }
   #sidebar-toggle { display: block; }
 }
+
+
+/* Ensure all selects have a consistent height and look */
+.form-select, #managed-systems-select, #system-selector {
+    appearance: none;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+}
+
+/* Add a slight highlight when hovering over the select */
+.form-select:hover {
+    border-color: var(--accent);
+}

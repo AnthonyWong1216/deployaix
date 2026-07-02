@@ -41,6 +41,160 @@ def connect_page():
 def lpars_page():
     return render_template("lpars.html")
 
+@app.route("/create_lpar", methods=["GET", "POST"])
+def create_lpar():
+    """Render the Create LPAR form (GET) or execute mksyscfg via SSH (POST)."""
+    if request.method == "GET":
+        return render_template("create_lpar.html")
+
+    f = request.form
+
+    # ── Identify the HMC and managed system ──────────────────
+    hmc_id    = f.get("hmc_id")       # passed as hidden field (see below)
+    system_id = f.get("managed_systems")
+    hmc = hmc_store.get(hmc_id) if hmc_id else None
+
+    # Fall back to any connected HMC when hmc_id not supplied via form
+    if not hmc:
+        all_hmcs = hmc_store.list()
+        hmc = all_hmcs[0] if all_hmcs else None
+
+    if not hmc:
+        return jsonify({"error": "No HMC selected or configured"}), 400
+    if not system_id:
+        return jsonify({"error": "No managed system selected"}), 400
+
+    # ── Build virtual_eth_adapters list ──────────────────────
+    # mksyscfg format: slot/ieee/pvid/addl_vlans/is_trunk/is_required/vswitch///
+    veth_parts = []
+    slots      = f.getlist("veth_slot[]")
+    pvids      = f.getlist("veth_pvid[]")
+    vswitches  = f.getlist("veth_vswitch[]")
+    addl_vlans = f.getlist("veth_addl_vlans[]")
+
+    for i, slot in enumerate(slots):
+        if not slot:
+            continue
+        pvid    = pvids[i]      if i < len(pvids)      else ""
+        vswitch = vswitches[i]  if i < len(vswitches)  else ""
+        addl    = addl_vlans[i] if i < len(addl_vlans) else ""
+        veth_parts.append(f"{slot}/0/{pvid}/{addl}/0/0/{vswitch}///")
+
+    virtual_eth_str = veth_parts   # list — ssh_manager wraps each spec individually
+
+    # ── Build virtual_fc_adapters list ───────────────────────
+    # Each spec: slot/client/vios_lpar_id/vios_lpar_name/vios_slot/wwpn1,wwpn2/is_required
+    # Passed as a list so ssh_manager wraps each spec in ""..."" without
+    # accidentally splitting on the comma inside the wwpn1,wwpn2 pair.
+    vfc_parts     = []
+    vfc_slots     = f.getlist("vfc_slot[]")
+    vfc_vios      = f.getlist("vfc_vios[]")
+    vfc_vios_slot = f.getlist("vfc_vios_slot[]")
+    vfc_wwpn1     = f.getlist("vfc_wwpn1[]")
+    vfc_wwpn2     = f.getlist("vfc_wwpn2[]")
+    vfc_req_ded   = f.getlist("vfc_require_dedicated[]")
+
+    for i, slot in enumerate(vfc_slots):
+        if not slot:
+            continue
+        vios_name = vfc_vios[i]      if i < len(vfc_vios)      else ""
+        vios_slot = vfc_vios_slot[i] if i < len(vfc_vios_slot) else ""
+        wwpn1_raw = (vfc_wwpn1[i]    if i < len(vfc_wwpn1)     else "").replace(":", "").lower()
+        wwpn2_raw = (vfc_wwpn2[i]    if i < len(vfc_wwpn2)     else "").replace(":", "").lower()
+        req_ded   = vfc_req_ded[i]   if i < len(vfc_req_ded)   else "0"
+        vios_id   = _resolve_vios_id(hmc, system_id, vios_name)
+        # Format: slot/client/vios_id/vios_name/vios_slot/wwpn1,wwpn2/is_required
+        vfc_parts.append(
+            f"{slot}/client/{vios_id}/{vios_name}/{vios_slot}/{wwpn1_raw},{wwpn2_raw}/{req_ded}"
+        )
+
+    # Keep as list — ssh_manager wraps each entry in ""..."" individually
+    virtual_fc_str = vfc_parts
+
+    # ── Build virtual_scsi_adapters string ───────────────────
+    # mksyscfg format: slot/client/vios_lpar_id/vios_lpar_name/vios_slot/0
+    vscsi_parts     = []
+    vscsi_slots     = f.getlist("vscsi_slot[]")
+    vscsi_vios      = f.getlist("vscsi_vios[]")
+    vscsi_vios_slot = f.getlist("vscsi_vios_slot[]")
+
+    for i, slot in enumerate(vscsi_slots):
+        if not slot:
+            continue
+        vios_name = vscsi_vios[i]      if i < len(vscsi_vios)      else ""
+        vios_slot = vscsi_vios_slot[i] if i < len(vscsi_vios_slot) else ""
+        vios_id   = _resolve_vios_id(hmc, system_id, vios_name)
+        vscsi_parts.append(f"{slot}/client/{vios_id}/{vios_name}/{vios_slot}/0")
+
+    virtual_scsi_str = vscsi_parts   # list — ssh_manager wraps each spec individually
+
+    # ── Assemble mksyscfg parameter dict ─────────────────────
+    params = {
+        "name":                       f.get("name"),
+        "lpar_id":                    f.get("lpar_id"),
+        "lpar_env":                   f.get("lpar_env", "aixlinux"),
+        "profile_name":               f.get("profile_name", "default_profile"),
+        "boot_mode":                  f.get("boot_mode", "norm"),
+        "lpar_proc_compat_mode":      f.get("lpar_proc_compat_mode", "default"),
+        "max_virtual_slots":          f.get("max_virtual_slots", "100"),
+        "conn_monitoring":            "1" if f.get("conn_monitoring") else "0",
+        "sync_curr_profile":          "1" if f.get("sync_curr_profile") else "0",
+        "allow_perf_collection":      "1" if f.get("shared_proc_pool_util_auth") else "0",
+        "proc_mode":                  f.get("proc_mode", "shared"),
+        "sharing_mode":               f.get("sharing_mode", "uncap"),
+        "min_proc_units":             f.get("min_proc_units"),
+        "desired_proc_units":         f.get("desired_proc_units"),
+        "max_proc_units":             f.get("max_proc_units"),
+        "min_procs":                  f.get("min_procs"),
+        "desired_procs":              f.get("desired_procs"),
+        "max_procs":                  f.get("max_procs"),
+        "uncap_weight":               f.get("uncap_weight"),
+        "min_mem":                    f.get("min_mem"),
+        "desired_mem":                f.get("desired_mem"),
+        "max_mem":                    f.get("max_mem"),
+        "virtual_eth_adapters":       virtual_eth_str,
+        "virtual_fc_adapters":        virtual_fc_str,
+        "virtual_scsi_adapters":      virtual_scsi_str,
+    }
+
+    result = ssh_manager.create_lpar(
+        host=hmc["host"],
+        port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        managed_system=system_id,
+        params=params,
+    )
+
+    if result.get("ok"):
+        return jsonify({
+            "ok":      True,
+            "message": result.get("message", "LPAR created successfully."),
+            "command": result.get("command", ""),
+        }), 201
+    return jsonify({
+        "ok":      False,
+        "error":   result.get("error", "mksyscfg failed"),
+        "stderr":  result.get("stderr", ""),
+        "command": result.get("command", ""),
+    }), 400
+
+
+def _resolve_vios_id(hmc: dict, system_id: str, vios_name: str) -> str:
+    """Look up the numeric lpar_id of a named VIOS via lssyscfg. Returns '0' on failure."""
+    if not vios_name:
+        return "0"
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"],
+        port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=(f'lssyscfg -r lpar -m "{system_id}" '
+                 f'--filter "lpar_names={vios_name}" -F lpar_id'),
+    )
+    if result.get("ok"):
+        return result["output"].strip().splitlines()[0].strip() or "0"
+    return "0"
 
 @app.route("/managed-systems")
 def managed_systems_page():
@@ -290,9 +444,9 @@ def get_lpars(hmc_id, system_id):
     use_ssh = (method == "ssh") or (method == "auto" and not hmc.get("session_id"))
 
     if use_ssh:
-        # lssyscfg -r lpar returns one CSV line per LPAR
+        # lssyscfg -r lpar -m <system> -F name:lpar_id:state:lpar_env:rmc_ipaddr:os_version
         cmd = (f'lssyscfg -r lpar -m "{system_id}" '
-               f'-F name:lpar_id:state:lpar_env')
+               f'-F name:lpar_id:state:lpar_env:rmc_ipaddr:os_version')
         result = ssh_manager.run_hmc_command(
             host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
             username=hmc.get("username", "hscroot"),
@@ -307,12 +461,14 @@ def get_lpars(hmc_id, system_id):
                     continue
                 parts = line.split(":")
                 lpars.append({
-                    "name":     parts[0] if len(parts) > 0 else "—",
-                    "lpar_id":  parts[1] if len(parts) > 1 else "—",
-                    "id":       parts[0] if len(parts) > 0 else "—",
-                    "state":    parts[2] if len(parts) > 2 else "—",
-                    "type":     parts[3] if len(parts) > 3 else "—",
-                    "profile":  "—",
+                    "name":       parts[0] if len(parts) > 0 else "—",
+                    "lpar_id":    parts[1] if len(parts) > 1 else "—",
+                    "id":         parts[0] if len(parts) > 0 else "—",
+                    "state":      parts[2] if len(parts) > 2 else "—",
+                    "type":       parts[3] if len(parts) > 3 else "—",
+                    "ip_address": parts[4] if len(parts) > 4 else "—",
+                    "os_version": parts[5] if len(parts) > 5 else "—",
+                    "profile":    "—",
                 })
             return jsonify({"ok": True, "data": lpars, "method": "ssh"})
         if not hmc.get("session_id"):
