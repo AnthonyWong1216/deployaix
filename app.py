@@ -41,6 +41,11 @@ def connect_page():
 def lpars_page():
     return render_template("lpars.html")
 
+@app.route("/topology")
+def topology_page():
+    return render_template("topology.html")
+
+
 @app.route("/create_lpar", methods=["GET", "POST"])
 def create_lpar():
     """Render the Create LPAR form (GET) or execute mksyscfg via SSH (POST)."""
@@ -590,9 +595,152 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
     return jsonify(result)
 
 
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/vfc-topology",
+           methods=["GET"])
+def get_vfc_topology(hmc_id, system_id):
+    """Return the Virtual Fibre Channel (NPIV) topology for a managed system.
+
+    Runs, over a single SSH connection to the HMC:
+      1. lshwres -r virtualio --rsubtype fc --level lpar -m <system>
+         → every virtual FC adapter mapping (client + server side).
+      2. viosvrcmd -m <system> -p <VIOS> -c "lsmap -all -npiv -fmt ,"
+         → the vfchost ↔ fcs ↔ client mapping as seen from each VIOS.
+
+    The raw command text is returned verbatim so the UI can render it above
+    the topology graph, together with parsed rows used to draw the graph.
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    m = f'"{system_id}"'
+
+    # ── Step 1: lshwres for every virtual FC adapter on the system ──
+    lshwres_cmd = (
+        f'lshwres -r virtualio --rsubtype fc --level lpar -m {m} '
+        f'-F lpar_name:lpar_id:slot_num:adapter_type:remote_lpar_name:'
+        f'remote_lpar_id:remote_slot_num:wwpns'
+    )
+    lshwres_res = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=lshwres_cmd,
+    )
+
+    # Parse lshwres rows and discover the VIOS partitions (adapter_type=server)
+    fc_fields = ["lpar_name", "lpar_id", "slot_num", "adapter_type",
+                 "remote_lpar_name", "remote_lpar_id", "remote_slot_num", "wwpns"]
+    fc_rows = []
+    vios_names = []
+    if lshwres_res.get("ok"):
+        for line in lshwres_res["output"].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("No results") or line.lower().startswith("error"):
+                continue
+            parts = line.split(":")
+            row = dict(zip(fc_fields, parts))
+            fc_rows.append(row)
+            if row.get("adapter_type") == "server" and row.get("lpar_name"):
+                if row["lpar_name"] not in vios_names:
+                    vios_names.append(row["lpar_name"])
+
+    # ── Step 2: lsmap -all -npiv on each discovered VIOS ──
+    lsmap_cmds = {
+        name: (f'viosvrcmd -m {m} -p "{name}" '
+               f'-c "lsmap -all -npiv -fmt ,"')
+        for name in vios_names
+    }
+    lsmap_raw = {}
+    if lsmap_cmds:
+        lsmap_raw = ssh_manager.run_hmc_commands_batch(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            commands=lsmap_cmds,
+        )
+
+    # lsmap -fmt , output columns (comma-separated):
+    #   1st value  = vfchost name/number (server virtual FC adapter)
+    #   2nd value  = physloc of the vfchost; the number after "-C" is the
+    #                VIOS slot number that hosts this vfchost
+    #   ...
+    #   last value = physloc of the remote (client) virtual FC adapter; the
+    #                number after "-C" is the client LPAR slot number
+    # name,physloc,clntid,clntname,clntos,status,fc,fcphysloc,ports,flags,vfcclient,vfcclientdrc
+    lsmap_fields = ["vfchost", "physloc", "clntid", "clntname", "clntos",
+                    "status", "fc", "fcphysloc", "ports", "flags",
+                    "vfcclient", "vfcclientdrc"]
+
+    def slot_after_c(physloc: str) -> str:
+        """Extract the slot number that follows '-C' in a physical location code.
+
+        e.g. 'U8286.42A.XXXXXXX-V2-C12' -> '12'. Returns '' if not present.
+        """
+        if not physloc:
+            return ""
+        for token in physloc.split("-"):
+            token = token.strip()
+            if token.upper().startswith("C") and token[1:].isdigit():
+                return token[1:]
+        return ""
+
+    lsmap_parsed = {}
+    for name, res in lsmap_raw.items():
+        rows = []
+        if res.get("ok"):
+            for line in res["output"].splitlines():
+                line = line.strip()
+                if not line or line.startswith(("name,", "No results")):
+                    continue
+                if line.lower().startswith("error"):
+                    continue
+                parts = line.split(",")
+                row = dict(zip(lsmap_fields, parts))
+                # Derive the VIOS slot (from vfchost physloc) and the client
+                # LPAR slot (from the remote/client vfc physloc).
+                row["vios_slot"] = slot_after_c(row.get("physloc", ""))
+                row["client_slot"] = slot_after_c(
+                    row.get("vfcclientdrc") or row.get("fcphysloc") or "")
+                rows.append(row)
+        lsmap_parsed[name] = rows
+
+
+    # ── Assemble raw command text for display above the graph ──
+    commands = []
+    commands.append({
+        "title": "lshwres — virtual FC adapters",
+        "command": lshwres_cmd,
+        "output": (lshwres_res.get("output") if lshwres_res.get("ok")
+                   else lshwres_res.get("error", "command failed")) or "(no output)",
+        "ok": bool(lshwres_res.get("ok")),
+    })
+    for name in vios_names:
+        res = lsmap_raw.get(name, {})
+        commands.append({
+            "title": f"lsmap -all -npiv on VIOS {name}",
+            "command": lsmap_cmds[name],
+            "output": (res.get("output") if res.get("ok")
+                       else res.get("error", "command failed")) or "(no output)",
+            "ok": bool(res.get("ok")),
+        })
+
+    return jsonify({
+        "ok": True,
+        "system_id": system_id,
+        "vios": vios_names,
+        "fc_adapters": fc_rows,
+        "lsmap": lsmap_parsed,
+        "commands": commands,
+    })
+
+
 @app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/lpars/<lpar_id>/action",
            methods=["POST"])
 def lpar_action(hmc_id, system_id, lpar_id):
+
     hmc = hmc_store.get(hmc_id)
     if not hmc:
         return jsonify({"error": "HMC not found"}), 404

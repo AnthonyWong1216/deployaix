@@ -4,11 +4,27 @@
 {% block page_title %}Create LPAR{% endblock %}
 
 {% block content %}
+<!-- ── Bulk create template toolbar ── -->
+<div style="display:flex;justify-content:flex-end;gap:12px;margin-bottom:16px;">
+  <button type="button" class="btn btn-primary" style="padding:8px 18px;" onclick="downloadBulkTemplate()">
+    &#8681; Download bulk create template
+  </button>
+  <input type="file" id="bulk-template-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bulkCreateFromTemplate(event)">
+  <button type="button" class="btn btn-primary" style="padding:8px 18px;" onclick="document.getElementById('bulk-template-file').click()">
+    &#8593; Bulk create LPAR from template
+  </button>
+</div>
+
+<!-- Bulk create result banner -->
+<div id="bulk-create-result" style="display:none;margin-bottom:16px;padding:14px 16px;border-radius:6px;font-size:13px;line-height:1.7;"></div>
+
+
 <!-- ── Form Card ── -->
 <div class="card shadow-sm">
   <div class="card-title" style="font-size: 1.2rem; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 20px;">
     New LPAR Configuration
   </div>
+
   
   <div class="card-body p-4">
     <style>
@@ -428,16 +444,387 @@
 
         <div class="btn-group-footer d-flex justify-content-end gap-3" style="display:flex;gap:12px;justify-content:flex-end;">
             <a href="/lpars" class="btn btn-secondary">Cancel</a>
+            <button type="button" id="download-btn" class="btn btn-secondary px-4" style="padding:10px 24px;" onclick="downloadLparTemplate()">&#8681; Download LPAR create template</button>
             <button type="submit" id="submit-btn" class="btn btn-primary px-5" style="padding:10px 40px;">Create LPAR</button>
         </div>
+
     </form>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
+// ── Bulk create LPARs from an uploaded template ───────────
+// Accepts an .xlsx workbook where EACH TAB (sheet) holds one LPAR's
+// parameters (same key/value layout as the downloaded LPAR template).
+// Loops every tab and POSTs to /create_lpar; the LPAR name comes from
+// that tab's "name" parameter.
+async function bulkCreateFromTemplate(event) {
+    const input = event.target;
+    const file  = input.files && input.files[0];
+    if (!file) return;
+
+    const banner = document.getElementById('bulk-create-result');
+    const showBanner = (html, ok) => {
+        banner.style.display   = 'block';
+        banner.style.background = ok ? '#dafbe1' : '#ffebe9';
+        banner.style.border     = ok ? '1px solid #1a7f37' : '1px solid #d1242f';
+        banner.style.color      = ok ? '#1a7f37' : '#d1242f';
+        banner.innerHTML = html;
+        banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+
+    if (typeof XLSX === 'undefined') {
+        showBanner('&#10007; Spreadsheet library failed to load. Check your network connection.', false);
+        input.value = '';
+        return;
+    }
+
+    // The active HMC / managed system currently selected on the form are
+    // used unless the tab explicitly provides managed_systems / hmc.
+    const formHmcId   = document.getElementById('form-hmc-id').value
+                        || localHMCId || '';
+    const formSystem  = document.getElementById('managed-systems-select').value || '';
+
+    let workbook;
+    try {
+        const buf = await file.arrayBuffer();
+        workbook  = XLSX.read(buf, { type: 'array' });
+    } catch (err) {
+        showBanner(`&#10007; Failed to read file: ${escHtml(err.message)}`, false);
+        input.value = '';
+        return;
+    }
+
+    const sheetNames = workbook.SheetNames || [];
+    if (!sheetNames.length) {
+        showBanner('&#10007; No tabs found in the uploaded template.', false);
+        input.value = '';
+        return;
+    }
+
+    // Simple scalar fields understood by /create_lpar
+    const scalarFields = new Set([
+        'managed_systems', 'hmc_id', 'name', 'lpar_id', 'lpar_env', 'profile_name',
+        'boot_mode', 'lpar_proc_compat_mode', 'max_virtual_slots',
+        'conn_monitoring', 'sync_curr_profile', 'shared_proc_pool_util_auth',
+        'proc_mode', 'sharing_mode', 'uncap_weight',
+        'min_proc_units', 'desired_proc_units', 'max_proc_units',
+        'min_procs', 'desired_procs', 'max_procs',
+        'min_mem', 'desired_mem', 'max_mem',
+    ]);
+
+    // Adapter section title -> {list field prefix -> column key}
+    const adapterSections = {
+        'Virtual Ethernet Adapters': {
+            client_slot: 'veth_slot', pvid: 'veth_pvid', vswitch: 'veth_vswitch',
+            addl_vlans: 'veth_addl_vlans', ieee_802_1q: 'veth_ieee',
+            is_trunk: 'veth_trunk', is_required: 'veth_required',
+        },
+        'Virtual Fibre Channel Adapters': {
+            client_slot: 'vfc_slot', vios_name: 'vfc_vios', vios_slot: 'vfc_vios_slot',
+            require_dedicated_wwpn: 'vfc_require_dedicated',
+            wwpn1: 'vfc_wwpn1', wwpn2: 'vfc_wwpn2',
+        },
+        'Virtual SCSI Adapters': {
+            client_slot: 'vscsi_slot', vios_name: 'vscsi_vios',
+            vios_slot: 'vscsi_vios_slot', adapter_type: 'vscsi_type',
+        },
+    };
+
+    // Parse a single sheet into a FormData for /create_lpar
+    const parseSheet = (sheet) => {
+        const grid = XLSX.utils.sheet_to_json(sheet, {
+            header: 1, blankrows: false, defval: '',
+        }).map((row) => row.map((c) => (c === null || c === undefined ? '' : String(c).trim())));
+
+        const fd = new FormData();
+        let i = 0;
+
+        // 1) Leading key/value block(s): a header row followed by a value row.
+        //    We keep consuming pairs until we hit a recognised adapter title
+        //    or run out of rows.
+        while (i < grid.length) {
+            const row = grid[i] || [];
+            const firstCell = (row[0] || '');
+
+            // Stop when the row is an adapter section title
+            if (adapterSections[firstCell]) break;
+
+            // Blank separator row → skip
+            if (row.every((c) => c === '')) { i++; continue; }
+
+            const header = row;
+            const valueRow = grid[i + 1] || [];
+            header.forEach((key, idx) => {
+                if (!key) return;
+                if (scalarFields.has(key)) {
+                    fd.set(key, valueRow[idx] ?? '');
+                }
+            });
+            i += 2;
+        }
+
+        // 2) Adapter sections
+        while (i < grid.length) {
+            const row = grid[i] || [];
+            const title = row[0] || '';
+            if (!adapterSections[title]) { i++; continue; }
+
+            const mapping = adapterSections[title];
+            const colHeader = grid[i + 1] || [];
+            i += 2;
+
+            // Data rows until blank / next section
+            while (i < grid.length) {
+                const dataRow = grid[i] || [];
+                const dataFirst = dataRow[0] || '';
+                if (dataRow.every((c) => c === '')) { i++; break; }
+                if (adapterSections[dataFirst]) break;
+
+                colHeader.forEach((colKey, idx) => {
+                    const field = mapping[colKey];
+                    if (!field) return;
+                    fd.append(`${field}[]`, dataRow[idx] ?? '');
+                });
+                i++;
+            }
+        }
+
+        // Fill in HMC / managed system from the form when omitted in the tab
+        if (!fd.get('hmc_id') && formHmcId)          fd.set('hmc_id', formHmcId);
+        if (!fd.get('managed_systems') && formSystem) fd.set('managed_systems', formSystem);
+
+        return fd;
+    };
+
+    // Loop over every tab and create the LPAR
+    const results = [];
+    for (const name of sheetNames) {
+        const sheet = workbook.Sheets[name];
+        let fd;
+        try {
+            fd = parseSheet(sheet);
+        } catch (err) {
+            results.push({ tab: name, lpar: name, ok: false, msg: `Parse error: ${err.message}` });
+            continue;
+        }
+
+        const lparName = fd.get('name') || name;
+        showBanner(`&#8987; Creating LPAR <strong>${escHtml(lparName)}</strong> (tab "${escHtml(name)}")…`, true);
+
+        try {
+            const res  = await fetch('/create_lpar', { method: 'POST', body: fd });
+            const data = await res.json();
+            results.push({
+                tab: name,
+                lpar: lparName,
+                ok:  !!data.ok,
+                msg: data.ok ? (data.message || 'created') : (data.error || 'failed') +
+                     (data.stderr ? ` — ${data.stderr}` : ''),
+            });
+        } catch (err) {
+            results.push({ tab: name, lpar: lparName, ok: false, msg: `Network error: ${err.message}` });
+        }
+    }
+
+    // Summarise
+    const okCount = results.filter((r) => r.ok).length;
+    const rowsHtml = results.map((r) =>
+        `<div style="margin-top:4px;">${r.ok ? '&#10003;' : '&#10007;'}
+            <strong>${escHtml(r.lpar)}</strong>
+            <span style="color:#666;">(tab "${escHtml(r.tab)}")</span> — ${escHtml(r.msg)}</div>`
+    ).join('');
+    showBanner(
+        `<strong>Bulk create finished: ${okCount}/${results.length} succeeded.</strong>${rowsHtml}`,
+        okCount === results.length
+    );
+
+    input.value = ''; // allow re-uploading the same file
+}
+
+// ── Download bulk create CSV template ─────────────────────
+
+// Generates a CSV whose header row contains every required parameter
+// column for the "New LPAR Configuration" form, plus one example row.
+function downloadBulkTemplate() {
+    const columns = [
+        'managed_systems',      // Managed System (required)
+        'name',                 // LPAR Name (required)
+        'lpar_id',              // LPAR ID (required)
+        'lpar_env',             // LPAR Env (required)
+        'profile_name',         // Profile Name (required)
+        'proc_mode',            // Proc Mode (required)
+        'min_proc_units',       // Min Proc Units (required)
+        'desired_proc_units',   // Desired Proc Units (required)
+        'max_proc_units',       // Max Proc Units (required)
+        'min_procs',            // Min Procs / vCPU (required)
+        'desired_procs',        // Desired Procs / vCPU (required)
+        'max_procs',            // Max Procs / vCPU (required)
+        'min_mem',              // Minimum Memory GB (required)
+        'desired_mem',          // Desired Memory GB (required)
+        'max_mem',              // Maximum Memory GB (required)
+    ];
+
+    // A sample row to illustrate the expected values
+    const example = [
+        'Server-9009-22A-SN1234567',
+        'TEMP01_S051',
+        '10',
+        'aixlinux',
+        'default_profile',
+        'shared',
+        '0.2',
+        '0.4',
+        '1',
+        '1',
+        '1',
+        '1',
+        '1',
+        '4',
+        '8',
+    ];
+
+    const escapeCell = (v) => {
+        const s = String(v ?? '');
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const csv = [
+        columns.map(escapeCell).join(','),
+        example.map(escapeCell).join(','),
+    ].join('\r\n');
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'lpar_bulk_create_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ── Download LPAR create template with user-entered values ─
+// Exports a CSV containing the parameters the user has filled in
+// on the "New LPAR Configuration" form (header row + values row).
+function downloadLparTemplate() {
+    // Field name -> DOM element id (or [name] selector fallback)
+    const fields = [
+        'managed_systems',
+        'name',
+        'lpar_id',
+        'lpar_env',
+        'profile_name',
+        'boot_mode',
+        'lpar_proc_compat_mode',
+        'max_virtual_slots',
+        'proc_mode',
+        'sharing_mode',
+        'uncap_weight',
+        'min_proc_units',
+        'desired_proc_units',
+        'max_proc_units',
+        'min_procs',
+        'desired_procs',
+        'max_procs',
+        'min_mem',
+        'desired_mem',
+        'max_mem',
+    ];
+
+    const form = document.getElementById('lpar-form');
+
+    const getValue = (fieldName) => {
+        const el = form.querySelector(`[name="${fieldName}"]`);
+        if (!el) return '';
+        if (el.type === 'checkbox') return el.checked ? '1' : '0';
+        return el.value ?? '';
+    };
+
+    const escapeCell = (v) => {
+        const s = String(v ?? '');
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const values = fields.map(getValue);
+
+    const rows = [
+        fields.map(escapeCell).join(','),
+        values.map(escapeCell).join(','),
+    ];
+
+    // ── Section 4: Virtual Adapters ──────────────────────
+    // Collect the repeating adapter groups the user has added.
+    const getListValues = (fieldName) =>
+        Array.from(form.querySelectorAll(`[name="${fieldName}[]"]`)).map((el) =>
+            el.type === 'checkbox' ? (el.checked ? '1' : '0') : (el.value ?? '')
+        );
+
+    const buildAdapterSection = (title, columns) => {
+        const cols = columns.map((c) => c.field);
+        const lists = cols.map((f) => getListValues(f));
+        const count = lists.reduce((m, l) => Math.max(m, l.length), 0);
+        if (!count) return;
+        rows.push('');
+        rows.push(escapeCell(title));
+        rows.push(columns.map((c) => escapeCell(c.label)).join(','));
+        for (let i = 0; i < count; i++) {
+            rows.push(lists.map((l) => escapeCell(l[i] ?? '')).join(','));
+        }
+    };
+
+    // Virtual Ethernet adapters
+    buildAdapterSection('Virtual Ethernet Adapters', [
+        { field: 'veth_slot',       label: 'client_slot' },
+        { field: 'veth_pvid',       label: 'pvid' },
+        { field: 'veth_vswitch',    label: 'vswitch' },
+        { field: 'veth_addl_vlans', label: 'addl_vlans' },
+        { field: 'veth_ieee',       label: 'ieee_802_1q' },
+        { field: 'veth_trunk',      label: 'is_trunk' },
+        { field: 'veth_required',   label: 'is_required' },
+    ]);
+
+    // Virtual Fibre Channel adapters
+    buildAdapterSection('Virtual Fibre Channel Adapters', [
+        { field: 'vfc_slot',              label: 'client_slot' },
+        { field: 'vfc_vios',              label: 'vios_name' },
+        { field: 'vfc_vios_slot',         label: 'vios_slot' },
+        { field: 'vfc_require_dedicated',  label: 'require_dedicated_wwpn' },
+        { field: 'vfc_wwpn1',             label: 'wwpn1' },
+        { field: 'vfc_wwpn2',             label: 'wwpn2' },
+    ]);
+
+    // Virtual SCSI adapters
+    buildAdapterSection('Virtual SCSI Adapters', [
+        { field: 'vscsi_slot',      label: 'client_slot' },
+        { field: 'vscsi_vios',      label: 'vios_name' },
+        { field: 'vscsi_vios_slot', label: 'vios_slot' },
+        { field: 'vscsi_type',      label: 'adapter_type' },
+    ]);
+
+    const csv = rows.join('\r\n');
+
+    const lparName = (getValue('name') || 'lpar').replace(/[^A-Za-z0-9_-]/g, '_');
+
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `lpar_create_${lparName}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
 let localHMCId = null;
 let vethCount = 0;
+
 let vfcCount = 0;
+
 let vscsiCount = 0;
 
 // ── Populate HMC selector on load ────────────────────────
