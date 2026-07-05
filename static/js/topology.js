@@ -288,10 +288,49 @@
         "Client LPAR: " + name + (cr && cr.lpar_id ? "\nLPAR ID: " + cr.lpar_id : "") + "\nBoot: SAN (NPIV)"));
     });
 
+    // ---- Sort serverRows to minimise edge crossings ----
+    // Primary sort: VIOS name order (preserves left-column sequence).
+    // Secondary sort: client LPAR name (groups all connections to the same
+    // client together so edges from one VIOS fan out without crossing).
+    const viosOrder = {};
+    viosNames.forEach((n, i) => { viosOrder[n] = i; });
+    serverRows.sort((a, b) => {
+      const vd = (viosOrder[a.lpar_name] || 0) - (viosOrder[b.lpar_name] || 0);
+      if (vd !== 0) return vd;
+      return (a.remote_lpar_name || "").localeCompare(b.remote_lpar_name || "");
+    });
+
+    // Re-derive clientNames in the order they first appear in the sorted
+    // serverRows so the right column aligns with the middle column.
+    const clientNamesSorted = [];
+    serverRows.forEach((r) => {
+      if (r.remote_lpar_name && clientNamesSorted.indexOf(r.remote_lpar_name) < 0)
+        clientNamesSorted.push(r.remote_lpar_name);
+    });
+    // Append any remaining client names not referenced by a server row.
+    clientNames.forEach((n) => { if (clientNamesSorted.indexOf(n) < 0) clientNamesSorted.push(n); });
+
+    // Update clientIdOf with re-ordered positions.
+    const clientIdOfSorted = {};
+    const cySorted = rows(Math.max(clientNamesSorted.length, 1), 150);
+    // Rebuild client nodes with sorted y positions.
+    // Remove the previously added client nodes and re-add with correct y.
+    clientNamesSorted.forEach((name, i) => {
+      const id = clientIdOf[name] || ("c" + i);
+      clientIdOfSorted[name] = id;
+      // Update position of existing node.
+      const existingIdx = nodes.findIndex((n) => n.id === id);
+      if (existingIdx >= 0) nodes[existingIdx].y = cySorted[i];
+    });
+    // Patch clientIdOf so mid-node creation uses the right IDs.
+    clientNamesSorted.forEach((name) => { clientIdOf[name] = clientIdOfSorted[name]; });
+
     // ---- Build a lsmap lookup by (vios, vfchost/clntname) for enrichment ----
     // Index lsmap rows by VIOS name for vfchost/fcs matching.
     // ---- vFC Mapping nodes (middle) — one per server adapter ----
-    const midY = rows(Math.max(serverRows.length, 1), 118);
+    // Use tighter row gap for large sets to keep graph compact.
+    const midRowGap = serverRows.length > 10 ? 90 : 118;
+    const midY = rows(Math.max(serverRows.length, 1), midRowGap);
     serverRows.forEach((r, i) => {
       const mid = "m" + i;
       const viosNodeId = viosIdOf[r.lpar_name];
@@ -317,12 +356,14 @@
           String(mp.clntid) === String(r.remote_lpar_id) &&
           String(mp.client_slot) === String(r.remote_slot_num));
       }
+      let vfcclient = "";
       if (match) {
         vfchost = match.vfchost || "";
         fcs = match.fc || "";
         fcloc = match.fcphysloc || "";
         status = match.status || "";
         clientSlotMap = match.client_slot || "";  // slot num after "-C" of client physloc
+        vfcclient = match.vfcclient || "";        // client LPAR logical FC adapter (fcsX)
       }
 
       // The VIOS slot is authoritative from lshwres (the server adapter slot).
@@ -331,7 +372,12 @@
       const clientSlot = r.remote_slot_num || clientSlotMap || "?";
 
 
-      const wwpns = (r.wwpns || "").replace(/\s+/g, "");
+      // Prefer the wwpns from the client LPAR's own adapter row (adapter_type=client,
+      // lpar_name == clientName); fall back to the server adapter row's wwpns field
+      // which also carries the NPIV WWPN(s) assigned to the client.
+      const clientRow = clientName ? clientRows.find((cr) => cr.lpar_name === clientName &&
+        (r.remote_slot_num ? String(cr.slot_num) === String(r.remote_slot_num) : true)) : null;
+      const wwpns = ((clientRow && clientRow.wwpns) || r.wwpns || "").replace(/\s+/g, "");
       const midLabel = "<b>" + (vfchost || "vFC slot " + viosSlot) + "</b>" +
         (fcs ? "\n" + fcs + " · fabric" : "") +
         (fcloc ? "\n<i>" + fcloc + "</i>" : "");
@@ -352,9 +398,12 @@
       }
       if (clientNodeId) {
         edges.push(edge(mid, clientNodeId,
-          "LPAR slot " + clientSlot + (wwpns ? "\nWWPN " + wwpns : ""),
+          "LPAR slot " + clientSlot +
+          (vfcclient ? "\n" + vfcclient : "") +
+          (wwpns ? "\nWWPN " + wwpns : ""),
           "remote_lpar_id=" + (r.remote_lpar_id || "?") +
           "\nClient LPAR slot (from client -C): " + clientSlot +
+          (vfcclient ? "\nClient FC adapter: " + vfcclient : "") +
           (wwpns ? "\nWWPN: " + wwpns : "")));
       }
 
@@ -503,6 +552,9 @@
   }
 
 
+  // Track whether a linear-focus is active per tab.
+  const FOCUS_MODE = { npiv: false, vscsi: false, vnet: false };
+
   function buildNetwork(tab) {
     const src = datasetFor(tab);
 
@@ -510,13 +562,175 @@
     const nodes = new vis.DataSet(src.nodes.map((n) => Object.assign({}, n)));
     const edges = new vis.DataSet(src.edges.map((e, i) => Object.assign({ id: "e" + tab + i }, e)));
     if (NET[tab] && NET[tab].network) { NET[tab].network.destroy(); }
+    FOCUS_MODE[tab] = false;
     const network = new vis.Network(container, { nodes: nodes, edges: edges }, VIS_OPTIONS);
-    network.on("selectNode", (params) => isolate(tab, params.nodes[0]));
-    network.on("deselectNode", () => resetHighlight(tab));
-    network.on("click", (params) => { if (params.nodes.length === 0) resetHighlight(tab); });
+    network.on("selectNode", (params) => {
+      // Single-click: highlight connected path (dim others).
+      if (!FOCUS_MODE[tab]) isolate(tab, params.nodes[0]);
+    });
+    network.on("deselectNode", () => { if (!FOCUS_MODE[tab]) resetHighlight(tab); });
+    network.on("click", (params) => {
+      if (params.nodes.length === 0) resetHighlight(tab);
+    });
+    network.on("doubleClick", (params) => {
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const nd = nodes.get(nodeId);
+        if (nd && nd._kind === "mid") {
+          // Double-click on a vfchost mapping node → single linear path.
+          linearFocus(tab, nodeId);
+        } else if (nd && nd._kind === "client") {
+          // Double-click on a Client LPAR → show all connected vfchosts + their VIOS.
+          lparFocus(tab, nodeId);
+        } else {
+          // Double-click on VIOS or empty: reset to full view.
+          resetHighlight(tab);
+        }
+      } else {
+        resetHighlight(tab);
+      }
+    });
     NET[tab] = { network: network, nodes: nodes, edges: edges };
     requestAnimationFrame(() => network.fit({ animation: false }));
     return NET[tab];
+  }
+
+  /* ---- Linear focus: double-click on a vfchost box ----
+     Hides every node/edge not connected to this vfchost and
+     repositions the three connected nodes into a horizontal line:
+       VIOS (left) ──► vfchost (centre) ──► Client LPAR (right)
+  */
+  function linearFocus(tab, midId) {
+    const nodes = NET[tab].nodes;
+    const edges = NET[tab].edges;
+    FOCUS_MODE[tab] = true;
+
+    // Collect the edges that touch this mid node.
+    const connEdges = edges.get().filter((e) => e.from === midId || e.to === midId);
+    const connNodeIds = new Set([midId]);
+    connEdges.forEach((e) => { connNodeIds.add(e.from); connNodeIds.add(e.to); });
+
+    // Hide unrelated nodes (make them invisible via hidden:true).
+    nodes.update(nodes.get().map((n) => {
+      if (connNodeIds.has(n.id)) return { id: n.id, hidden: false };
+      return { id: n.id, hidden: true };
+    }));
+
+    // Hide unrelated edges.
+    edges.update(edges.get().map((e) => {
+      const rel = connNodeIds.has(e.from) && connNodeIds.has(e.to);
+      return { id: e.id, hidden: !rel };
+    }));
+
+    // Determine VIOS node (kind=vios), client node (kind=client) among connected.
+    let viosId = null, clientId = null;
+    connNodeIds.forEach((id) => {
+      if (id === midId) return;
+      const n = nodes.get(id);
+      if (n && n._kind === "vios") viosId = id;
+      if (n && n._kind === "client") clientId = id;
+    });
+
+    // Reposition into a horizontal line: VIOS left, vfchost centre, LPAR right.
+    const LX = -480, MX = 0, RX = 480, LY = 0;
+    const updates = [{ id: midId, x: MX, y: LY, fixed: { x: true, y: true } }];
+    if (viosId) updates.push({ id: viosId, x: LX, y: LY, fixed: { x: true, y: true } });
+    if (clientId) updates.push({ id: clientId, x: RX, y: LY, fixed: { x: true, y: true } });
+    nodes.update(updates);
+
+    const net = NET[tab].network;
+    requestAnimationFrame(() => net.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } }));
+
+    const midLabel = (nodes.get(midId).label || "").replace(/<[^>]+>/g, "").split("\n")[0];
+    setStatus("Linear view: " + midLabel + "  ·  Double-click another vfchost or click empty space to reset.");
+  }
+
+  /* ---- LPAR focus: double-click on a Client LPAR box ----
+     Shows all vfchost mapping nodes connected to this LPAR, plus
+     each of their parent VIOS nodes. Hides everything else.
+     Layout (columnar, near-linear):
+       VIOS column (left, -480)  |  vfchost column (mid, 0)  |  LPAR (right, +480)
+     VIOS nodes are stacked at rows matching their connected vfchost.
+  */
+  function lparFocus(tab, clientId) {
+    const nodes = NET[tab].nodes;
+    const edges = NET[tab].edges;
+    FOCUS_MODE[tab] = true;
+
+    // Find all mid (vfchost) nodes directly connected to this LPAR.
+    const allEdges = edges.get();
+    const midIds = [];
+    allEdges.forEach((e) => {
+      if (e.from === clientId || e.to === clientId) {
+        const otherId = e.from === clientId ? e.to : e.from;
+        const nd = nodes.get(otherId);
+        if (nd && nd._kind === "mid" && midIds.indexOf(otherId) < 0) midIds.push(otherId);
+      }
+    });
+
+    // For each vfchost, find its connected VIOS node.
+    const viosIds = [];
+    const midToVios = {};
+    midIds.forEach((midId) => {
+      allEdges.forEach((e) => {
+        if (e.from === midId || e.to === midId) {
+          const otherId = e.from === midId ? e.to : e.from;
+          if (otherId === clientId) return;
+          const nd = nodes.get(otherId);
+          if (nd && nd._kind === "vios") {
+            midToVios[midId] = otherId;
+            if (viosIds.indexOf(otherId) < 0) viosIds.push(otherId);
+          }
+        }
+      });
+    });
+
+    // Build the full set of visible node IDs.
+    const visibleIds = new Set([clientId]);
+    midIds.forEach((id) => visibleIds.add(id));
+    viosIds.forEach((id) => visibleIds.add(id));
+
+    // Hide unrelated nodes and edges.
+    nodes.update(nodes.get().map((n) => ({
+      id: n.id, hidden: !visibleIds.has(n.id),
+    })));
+    edges.update(allEdges.map((e) => ({
+      id: e.id, hidden: !(visibleIds.has(e.from) && visibleIds.has(e.to)),
+    })));
+
+    // Position nodes into columns.
+    // vfchost nodes: stacked vertically in the middle column.
+    // VIOS nodes: aligned to the y of their connected vfchost.
+    // LPAR: single node centred on the right.
+    const ROW = 140;
+    const nMid = midIds.length;
+    const midYs = rows(nMid, ROW);
+    const updates = [];
+
+    // LPAR centred vertically among all vfchosts.
+    updates.push({ id: clientId, x: 480, y: 0, fixed: { x: true, y: true } });
+
+    midIds.forEach((midId, i) => {
+      updates.push({ id: midId, x: 0, y: midYs[i], fixed: { x: true, y: true } });
+      const viosId = midToVios[midId];
+      if (viosId) {
+        // If multiple vfchosts share the same VIOS, average their y positions.
+        const sharedMids = midIds.filter((m) => midToVios[m] === viosId);
+        const avgY = sharedMids.reduce((sum, m, _) => sum + midYs[midIds.indexOf(m)], 0) / sharedMids.length;
+        // Only push once per unique VIOS.
+        if (!updates.find((u) => u.id === viosId)) {
+          updates.push({ id: viosId, x: -480, y: avgY, fixed: { x: true, y: true } });
+        }
+      }
+    });
+
+    nodes.update(updates);
+
+    const net = NET[tab].network;
+    requestAnimationFrame(() => net.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } }));
+
+    const lparLabel = (nodes.get(clientId).label || "").replace(/<[^>]+>/g, "").split("\n")[0];
+    setStatus("LPAR view: " + lparLabel + "  (" + midIds.length + " vfchost path(s), " + viosIds.length + " VIOS)  ·  Click empty space to reset.");
   }
 
   function connectedSet(tab, startId) {
@@ -561,16 +775,32 @@
   }
 
   function resetHighlight(tab) {
+    if (!NET[tab]) return;
     const nodes = NET[tab].nodes, edges = NET[tab].edges;
+    const wasFocused = FOCUS_MODE[tab];
+    FOCUS_MODE[tab] = false;
+
     nodes.update(nodes.get().map((n) => {
       const c = C[n._kind];
-      return { id: n.id, opacity: 1, color: { background: c.bg, border: c.border }, font: { color: c.font } };
+      const update = {
+        id: n.id, hidden: false, opacity: 1,
+        color: { background: c.bg, border: c.border },
+        font: { color: c.font },
+      };
+      // Release fixed positions only when coming out of linear-focus mode.
+      if (wasFocused) update.fixed = { x: false, y: false };
+      return update;
     }));
     edges.update(edges.get().map((e) => ({
-      id: e.id, color: { color: "#94a3b8", opacity: 1 }, width: 1.5,
+      id: e.id, hidden: false,
+      color: { color: "#94a3b8", opacity: 1 }, width: 1.5,
       font: { color: "#475569", strokeColor: "#ffffff", strokeWidth: 4 },
     })));
-    setStatus("Click any node to isolate its virtualization path. Click empty space to reset.");
+
+    if (wasFocused && NET[tab].network) {
+      requestAnimationFrame(() => NET[tab].network.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } }));
+    }
+    setStatus("Click any node to isolate its virtualization path. Double-click a vFC mapping box to enter linear view.");
   }
 
   function renderLegend(tab) {
