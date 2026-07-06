@@ -737,6 +737,404 @@ def get_vfc_topology(hmc_id, system_id):
     })
 
 
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/vscsi-topology",
+           methods=["GET"])
+def get_vscsi_topology(hmc_id, system_id):
+    """Return the virtual SCSI topology for a managed system.
+
+    Runs, over a single SSH connection to the HMC:
+      1. lshwres -r virtualio --rsubtype scsi --level lpar -m <system>
+         → every vSCSI adapter mapping (server VIOS side + client LPAR side).
+      2. viosvrcmd -m <system> -p <VIOS> -c "lsmap -all -fmt ,"
+         → the vhostX ↔ backing-device ↔ client-slot mapping from each VIOS.
+
+    JOIN KEY: lshwres row slot_num (server adapter) == lsmap row svr_slot
+    The joined data drives the VIOS → vSCSI Target → Client LPAR graph.
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    m = f'"{system_id}"'
+
+    # ── Step 1: lshwres for every virtual SCSI adapter on the system ──
+    lshwres_cmd = (
+        f'lshwres -r virtualio --rsubtype scsi --level lpar -m {m} '
+        f'-F lpar_name:lpar_id:slot_num:adapter_type:'
+        f'remote_lpar_name:remote_lpar_id:remote_slot_num'
+    )
+    lshwres_res = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=lshwres_cmd,
+    )
+
+    # Parse lshwres rows; collect VIOS names from server-side adapter rows
+    scsi_fields = ["lpar_name", "lpar_id", "slot_num", "adapter_type",
+                   "remote_lpar_name", "remote_lpar_id", "remote_slot_num"]
+    scsi_rows = []
+    vios_names = []
+    if lshwres_res.get("ok"):
+        for line in lshwres_res["output"].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("No results") or line.lower().startswith("error"):
+                continue
+            parts = line.split(":")
+            row = dict(zip(scsi_fields, parts))
+            scsi_rows.append(row)
+            if row.get("adapter_type") == "server" and row.get("lpar_name"):
+                if row["lpar_name"] not in vios_names:
+                    vios_names.append(row["lpar_name"])
+
+    # ── Step 2: lsmap -all on each discovered VIOS ──
+    # lsmap -fmt , output (comma-separated):
+    #   vhostX, physloc, svr_vtd, backing_device, backing_type, status
+    # The physloc "-C<N>" slot number is the VIOS server-adapter slot (join key).
+    lsmap_cmds = {
+        name: (f'viosvrcmd -m {m} -p "{name}" '
+               f'-c "lsmap -all -fmt ,"')
+        for name in vios_names
+    }
+    lsmap_raw = {}
+    if lsmap_cmds:
+        lsmap_raw = ssh_manager.run_hmc_commands_batch(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            commands=lsmap_cmds,
+        )
+
+    def slot_after_c(physloc: str) -> str:
+        """Extract slot number after '-C' in a physical location code."""
+        if not physloc:
+            return ""
+        for token in physloc.split("-"):
+            token = token.strip()
+            if token.upper().startswith("C") and token[1:].isdigit():
+                return token[1:]
+        return ""
+
+    # lsmap -all -fmt , columns (space- or comma-separated — actual order varies
+    # by VIOS version; the most common layout is):
+    #   vhost, physloc, vtd, backing, backing_type, status, [clntid, clntname, ...]
+    lsmap_fields = ["vhost", "physloc", "vtd", "backing", "backing_type", "status",
+                    "clntid", "clntname"]
+
+    lsmap_parsed = {}
+    for name, res in lsmap_raw.items():
+        rows = []
+        if res.get("ok"):
+            for line in res["output"].splitlines():
+                line = line.strip()
+                if not line or line.startswith(("vhost,", "No results")):
+                    continue
+                if line.lower().startswith("error"):
+                    continue
+                parts = line.split(",")
+                row = dict(zip(lsmap_fields, parts))
+                # svr_slot = the slot number in the VIOS physloc ("-C<N>")
+                # This is the JOIN KEY that matches lshwres slot_num.
+                row["svr_slot"] = slot_after_c(row.get("physloc", ""))
+                rows.append(row)
+        lsmap_parsed[name] = rows
+
+    # ── Assemble raw command text for display above the graph ──
+    commands = []
+    commands.append({
+        "title":   "lshwres — virtual SCSI adapters",
+        "command": lshwres_cmd,
+        "output":  (lshwres_res.get("output") if lshwres_res.get("ok")
+                    else lshwres_res.get("error", "command failed")) or "(no output)",
+        "ok":      bool(lshwres_res.get("ok")),
+    })
+    for name in vios_names:
+        res = lsmap_raw.get(name, {})
+        commands.append({
+            "title":   f"lsmap -all on VIOS {name}",
+            "command": lsmap_cmds[name],
+            "output":  (res.get("output") if res.get("ok")
+                        else res.get("error", "command failed")) or "(no output)",
+            "ok":      bool(res.get("ok")),
+        })
+
+    return jsonify({
+        "ok":            True,
+        "system_id":     system_id,
+        "vios":          vios_names,
+        "scsi_adapters": scsi_rows,
+        "lsmap":         lsmap_parsed,
+        "commands":      commands,
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/vnet-topology",
+           methods=["GET"])
+def get_vnet_topology(hmc_id, system_id):
+    """Return the Virtual Network (SEA) topology for a managed system.
+
+    Runs, over a single SSH connection to the HMC:
+      1. lshwres -r virtualio --rsubtype eth --level lpar -m <system>
+         → every virtual ethernet adapter (client LPARs + VIOS trunk adapters).
+      2. viosvrcmd -m <system> -p <VIOS> -c "lsdev -type adapter -field name description state"
+         | grep -i shared
+         → identifies the SEA device name on each VIOS.
+      3. viosvrcmd -m <system> -p <VIOS> -c "entstat -all <sea_device>"
+         → extracts Real Adapter, Target Virtual Adapter Slot, link speed/status.
+
+    JOIN KEY (Step 1 ↔ Step 3):
+      lshwres server-adapter slot_num  ==  entstat "Target Virtual Adapter Slot"
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    m = f'"{system_id}"'
+    commands_out = []
+
+    # ── Step 1: lshwres for every virtual ethernet adapter ──────────────────
+    # Use comma-separated field names and comma as the output field delimiter.
+    # Note: there is no adapter_type field in this output format.
+    # Trunk (VIOS) adapters are identified by is_trunk=1.
+    # Client LPAR adapters have is_trunk=0 or empty.
+    lshwres_cmd = (
+        f'lshwres -r virtualio --rsubtype eth --level lpar -m {m} '
+        f'-F lpar_name,lpar_id,slot_num,vswitch,port_vlan_id,addl_vlan_ids,is_trunk,trunk_priority'
+    )
+    lshwres_res = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=lshwres_cmd,
+    )
+
+    # Fields returned (comma-delimited output from -F with comma separators):
+    #   lpar_name, lpar_id, slot_num, vswitch, port_vlan_id,
+    #   addl_vlan_ids, is_trunk, trunk_priority
+    eth_fields = ["lpar_name", "lpar_id", "slot_num", "vswitch",
+                  "port_vlan_id", "addl_vlan_ids", "is_trunk", "trunk_priority"]
+    eth_rows = []
+    vios_names = []
+    if lshwres_res.get("ok"):
+        for line in lshwres_res["output"].splitlines():
+            line = line.strip()
+            if not line or line.startswith("No results") or line.lower().startswith("error"):
+                continue
+            # The -F with comma separator outputs fields separated by commas.
+            # addl_vlan_ids may itself contain spaces but not commas, so split is safe.
+            parts = line.split(",")
+            row = dict(zip(eth_fields, parts))
+            # Derive adapter_type from is_trunk: "1" = server/VIOS trunk, else client
+            row["adapter_type"] = "server" if row.get("is_trunk") == "1" else "client"
+            eth_rows.append(row)
+            # Trunk adapters (is_trunk=1) are hosted on VIO Servers
+            if row.get("is_trunk") == "1" and row.get("lpar_name"):
+                if row["lpar_name"] not in vios_names:
+                    vios_names.append(row["lpar_name"])
+
+    commands_out.append({
+        "title": "lshwres — virtual ethernet adapters (Step 1)",
+        "command": lshwres_cmd,
+        "output": (lshwres_res.get("output") if lshwres_res.get("ok")
+                   else lshwres_res.get("error", "command failed")) or "(no output)",
+        "ok": bool(lshwres_res.get("ok")),
+    })
+
+    # ── Step 2: lsdev on each VIOS, pipe through grep -i shared ─────────────
+    # Command: viosvrcmd -m <ms> -p <VIOS> -c "lsdev" | grep -i shared
+    # The first column of each matching line is the SEA device name (e.g. ent5).
+    lsdev_cmds = {
+        name: f'viosvrcmd -m {m} -p "{name}" -c "lsdev" | grep -i shared'
+        for name in vios_names
+    }
+    lsdev_raw = {}
+    if lsdev_cmds:
+        lsdev_raw = ssh_manager.run_hmc_commands_batch(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            commands=lsdev_cmds,
+        )
+
+    # Parse: each output line is already filtered to "shared" entries.
+    # The first whitespace-delimited token is the device name (entX).
+    sea_devices = {}   # vios_name → list of sea device names (e.g. ["ent5"])
+    for vios, res in lsdev_raw.items():
+        devices = []
+        if res.get("ok"):
+            for line in res["output"].splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if parts:
+                    dev = parts[0]
+                    # Sanity-check: device name should look like entX
+                    if dev.startswith("ent") and dev not in devices:
+                        devices.append(dev)
+        sea_devices[vios] = devices
+        commands_out.append({
+            "title": f"lsdev (grep shared) on VIOS {vios} — find SEA (Step 2)",
+            "command": lsdev_cmds[vios],
+            "output": (res.get("output") if res.get("ok")
+                       else res.get("error", "command failed")) or "(no output)",
+            "ok": bool(res.get("ok")),
+        })
+
+    # ── Step 3: entstat grep commands per SEA device ─────────────────────────
+    # Run targeted grep-filtered entstat commands to extract specific fields
+    # reliably from the dense entstat -all output.
+    #
+    # Fields extracted (matching the user-confirmed real output format):
+    #   Real Adapter         → backing physical adapter (e.g. ent0)
+    #   Physical Port Link Status → physical link state (Up/Down)
+    #   Logical Port Link Status  → logical (SEA) link state
+    #   Physical Port Speed  → link speed (e.g. "1Gbps Full Duplex")
+    #   Virtual Adapter      → VIOS trunk virtual adapter (e.g. ent4 = trunk slot)
+    #   Port VLAN ID         → PVID carried by the trunk adapter
+    #   VLAN Tag IDs         → tagged VLANs bridged by the SEA
+
+    # Build one batch of grep commands per SEA device per field.
+    # Key format: "<vios>::<dev>::<field_key>"
+    entstat_grep_cmds = {}
+    for vios, devices in sea_devices.items():
+        for dev in devices:
+            base = f'viosvrcmd -m {m} -p "{vios}" -c "entstat -all {dev}"'
+            prefix = f"{vios}::{dev}"
+            entstat_grep_cmds[f"{prefix}::real_adapter"]    = f'{base} |grep -i "Real Adapter"'
+            entstat_grep_cmds[f"{prefix}::phys_link"]       = f'{base} |grep -i "Physical Port Link Status"'
+            entstat_grep_cmds[f"{prefix}::logical_link"]    = f'{base} |grep -i "Logical Port Link Status"'
+            entstat_grep_cmds[f"{prefix}::phys_speed"]      = f'{base} |grep -i "Physical Port Speed"'
+            entstat_grep_cmds[f"{prefix}::virtual_adapter"] = f'{base} |grep -i "Virtual Adapter"'
+            entstat_grep_cmds[f"{prefix}::port_vlan"]       = f'{base} |grep -i "Port VLAN ID"'
+            entstat_grep_cmds[f"{prefix}::vlan_tag_ids"]    = f'{base} |grep -i "VLAN Tag IDs"'
+
+    entstat_grep_raw = {}
+    if entstat_grep_cmds:
+        entstat_grep_raw = ssh_manager.run_hmc_commands_batch(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            commands=entstat_grep_cmds,
+        )
+
+    def _first_val(output: str, key_prefix: str) -> str:
+        """Return the value after the first ':' on the first matching output line."""
+        for line in (output or "").splitlines():
+            line = line.strip()
+            if ":" in line:
+                return line.split(":", 1)[-1].strip()
+        return ""
+
+    def _all_vals(output: str) -> list:
+        """Return all values after ':' for repeated fields (e.g. Port VLAN ID)."""
+        vals = []
+        for line in (output or "").splitlines():
+            line = line.strip()
+            if ":" in line:
+                v = line.split(":", 1)[-1].strip()
+                if v and v not in vals:
+                    vals.append(v)
+        return vals
+
+    # Assemble per-device info dicts and build command records for the panel
+    entstat_parsed = {}   # vios::dev → info dict
+
+    # Track which (vios, dev) pairs we've processed to avoid duplicate panel entries
+    processed_keys = set()
+
+    for field_key, res in entstat_grep_raw.items():
+        parts = field_key.split("::")
+        if len(parts) < 3:
+            continue
+        vios, dev, field = parts[0], parts[1], parts[2]
+        sea_key = f"{vios}::{dev}"
+        if sea_key not in entstat_parsed:
+            entstat_parsed[sea_key] = {
+                "real_adapter": "", "phys_link": "", "logical_link": "",
+                "phys_speed": "", "virtual_adapter": "", "port_vlan": "",
+                "vlan_tag_ids": "",
+                # legacy aliases used by buildVnetFromLive
+                "link_speed": "", "link_status": "", "trunk_slot": "",
+                "phys_ports": "", "bridged_vlans": "",
+            }
+        info = entstat_parsed[sea_key]
+        out  = res.get("output", "") if res.get("ok") else ""
+
+        if field == "real_adapter":
+            info["real_adapter"] = _first_val(out, "Real Adapter")
+        elif field == "phys_link":
+            info["phys_link"] = _first_val(out, "Physical Port Link Status")
+            info["link_status"] = info["phys_link"]
+        elif field == "logical_link":
+            info["logical_link"] = _first_val(out, "Logical Port Link Status")
+        elif field == "phys_speed":
+            info["phys_speed"] = _first_val(out, "Physical Port Speed")
+            info["link_speed"] = info["phys_speed"]
+        elif field == "virtual_adapter":
+            info["virtual_adapter"] = _first_val(out, "Virtual Adapter")
+            # Virtual Adapter (e.g. ent4) maps to the VIOS trunk slot.
+            # Cross-reference with lshwres trunk rows to find slot_num.
+            va = info["virtual_adapter"]
+            if va:
+                # Try to find the trunk lshwres row for this VIOS whose
+                # vswitch adapter name matches the virtual adapter.
+                # As a fallback, trunk_slot stays empty — JS uses lshwres slot_num.
+                trunk_rows = [r for r in eth_rows
+                              if r.get("lpar_name") == vios and r.get("is_trunk") == "1"]
+                if trunk_rows:
+                    info["trunk_slot"] = trunk_rows[0].get("slot_num", "")
+        elif field == "port_vlan":
+            vals = _all_vals(out)
+            info["port_vlan"] = ", ".join(vals) if vals else ""
+        elif field == "vlan_tag_ids":
+            info["vlan_tag_ids"] = _first_val(out, "VLAN Tag IDs")
+            # Populate bridged_vlans alias from tag IDs (or port VLAN if no tags)
+            if info["vlan_tag_ids"] and info["vlan_tag_ids"].lower() != "none":
+                info["bridged_vlans"] = info["vlan_tag_ids"]
+            elif info.get("port_vlan"):
+                info["bridged_vlans"] = info["port_vlan"]
+
+    # Build command output entries for the panel — one block per SEA device
+    # showing all 7 grep commands and their output together.
+    for vios, devices in sea_devices.items():
+        for dev in devices:
+            sea_key = f"{vios}::{dev}"
+            field_labels = [
+                ("real_adapter",    "Real Adapter"),
+                ("phys_link",       "Physical Port Link Status"),
+                ("logical_link",    "Logical Port Link Status"),
+                ("phys_speed",      "Physical Port Speed"),
+                ("virtual_adapter", "Virtual Adapter"),
+                ("port_vlan",       "Port VLAN ID"),
+                ("vlan_tag_ids",    "VLAN Tag IDs"),
+            ]
+            # Show each grep command + its output as a separate command block
+            for field, label in field_labels:
+                fkey = f"{sea_key}::{field}"
+                cmd_str = entstat_grep_cmds.get(fkey, "")
+                res = entstat_grep_raw.get(fkey, {})
+                commands_out.append({
+                    "title": f"entstat {dev} · {label} (Step 3, VIOS {vios})",
+                    "command": cmd_str,
+                    "output": (res.get("output") if res.get("ok")
+                               else res.get("error", "command failed")) or "(no output)",
+                    "ok": bool(res.get("ok")),
+                })
+
+    return jsonify({
+        "ok": True,
+        "system_id": system_id,
+        "vios": vios_names,
+        "eth_adapters": eth_rows,
+        "sea_devices": sea_devices,
+        "entstat": entstat_parsed,
+        "commands": commands_out,
+    })
+
+
 @app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/lpars/<lpar_id>/action",
            methods=["POST"])
 def lpar_action(hmc_id, system_id, lpar_id):
