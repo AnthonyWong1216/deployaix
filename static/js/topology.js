@@ -1010,9 +1010,14 @@
   }
 
   /* ============================================================
-     LIVE Virtual Network (SEA) BUILDER
+     LIVE Virtual Network (SEA) BUILDER  — multi-SEA edition
      Builds the Client LPAR → SEA Bridge → VIOS → Physical graph
      from the data returned by /api/.../vnet-topology.
+
+     All SEA devices returned by lsdev are rendered — one SEA Bridge
+     node per (viosName, seaDevice) pair.  Client LPARs are connected
+     to every SEA whose vswitch matches or whose bridged VLANs include
+     the client's PVID.
 
      Payload shape:
      {
@@ -1028,7 +1033,8 @@
        entstat: {                      ← entstat -all (Step 3)
          "viosa51a::ent5": {
            real_adapter, trunk_slot, link_speed, link_status,
-           phys_ports, bridged_vlans
+           phys_ports, bridged_vlans, virtual_adapter, port_vlan,
+           vlan_tag_ids, phys_speed, phys_link, logical_link
          }, …
        }
      }
@@ -1037,101 +1043,395 @@
        eth_adapters[trunk row].slot_num  ==  entstat.trunk_slot
   ============================================================ */
   function buildVnetFromLive(payload) {
-    const ethAdapters = (payload && payload.eth_adapters) || [];
-    const seaDevices  = (payload && payload.sea_devices)  || {};
-    const entstat     = (payload && payload.entstat)      || {};
+    var nodes = [], edges = [];
+    var ethAdapters = (payload && payload.eth_adapters) || [];
+    var seaDevices  = (payload && payload.sea_devices)  || {};
+    var entstat     = (payload && payload.entstat)      || {};
 
-    // Separate client LPARs from VIOS trunk adapters
-    const clientRows = ethAdapters.filter(function (r) {
-      return r.adapter_type === "client" || r.is_trunk !== "1";
-    }).filter(function (r) {
-      // Exclude VIOS partitions from the client list
+    // ── Separate rows ────────────────────────────────────────────────────────
+    var clientRows = ethAdapters.filter(function (r) {
       return r.adapter_type === "client";
     });
 
-    const trunkRows = ethAdapters.filter(function (r) {
+    var trunkRows = ethAdapters.filter(function (r) {
       return r.is_trunk === "1";
     });
-
-    // If there are no trunk rows, fall back to all server-type rows
-    const serverRows = trunkRows.length > 0 ? trunkRows :
+    var serverRows = trunkRows.length > 0 ? trunkRows :
       ethAdapters.filter(function (r) { return r.adapter_type === "server"; });
 
-    // Find the first SEA device + entstat info to use as the primary SEA bridge
-    // Build a list of all discovered SEA entries: { viosName, seaDevice, entstatInfo, trunkSlot }
-    const seaEntries = [];
+    // ── Build SEA entries for ALL discovered SEA devices ────────────────────
+    // seaEntries[i] = { viosName, seaDevice, trunkSlot, vswitch, realAdapter,
+    //                   linkSpeed, linkStatus, logicalStatus, virtualAdapter,
+    //                   portVlan, vlanTagIds, physPorts, bridgedVlans,
+    //                   allBridgedVlans[] }
+    var seaEntries = [];
     Object.keys(seaDevices).forEach(function (viosName) {
       var devList = seaDevices[viosName] || [];
       devList.forEach(function (dev) {
-        var key = viosName + "::" + dev;
-        var info = entstat[key] || {};
-        // Find the lshwres trunk row for this VIOS to get slot_num + vswitch
+        var ekey = viosName + "::" + dev;
+        var info = entstat[ekey] || {};
+
+        // Best-match trunk row: prefer the one whose slot_num == info.trunk_slot
         var trunkRow = serverRows.find(function (r) {
           return r.lpar_name === viosName &&
-            (info.trunk_slot ? String(r.slot_num) === String(info.trunk_slot) : true);
-        }) || serverRows.find(function (r) { return r.lpar_name === viosName; });
+            info.trunk_slot && String(r.slot_num) === String(info.trunk_slot);
+        }) || serverRows.find(function (r) {
+          return r.lpar_name === viosName;
+        });
+
+        var bridgedVlans = info.bridged_vlans ||
+                           info.vlan_tag_ids   ||
+                           (trunkRow && trunkRow.addl_vlan_ids) ||
+                           (trunkRow && trunkRow.port_vlan_id)  || "—";
+
+        // Collect all numeric VLAN IDs that this SEA bridges so we can route clients
+        var allBridgedVlans = [];
+        (bridgedVlans !== "—" ? bridgedVlans : "").split(/[\s,]+/).forEach(function (v) {
+          var n = parseInt(v, 10);
+          if (!isNaN(n)) allBridgedVlans.push(String(n));
+        });
+        // Also include port VLAN
+        var portVlanStr = info.port_vlan || (trunkRow && trunkRow.port_vlan_id) || "";
+        portVlanStr.split(/[\s,]+/).forEach(function (v) {
+          var n = parseInt(v, 10);
+          if (!isNaN(n) && allBridgedVlans.indexOf(String(n)) < 0) allBridgedVlans.push(String(n));
+        });
 
         seaEntries.push({
           viosName:       viosName,
           seaDevice:      dev,
-          trunkSlot:      info.trunk_slot     || (trunkRow && trunkRow.slot_num)   || "?",
+          trunkSlot:      info.trunk_slot  || (trunkRow && trunkRow.slot_num)  || "?",
           vswitch:        (trunkRow && trunkRow.vswitch) || "DefaultSwitch",
           realAdapter:    info.real_adapter   || "unknown",
-          // Step 3 grep fields — prefer new names, fall back to legacy aliases
           linkSpeed:      info.phys_speed     || info.link_speed   || "—",
           linkStatus:     info.phys_link      || info.link_status  || "—",
           logicalStatus:  info.logical_link   || "—",
           virtualAdapter: info.virtual_adapter || "—",
-          portVlan:       info.port_vlan      || "—",
+          portVlan:       info.port_vlan      || (trunkRow && trunkRow.port_vlan_id) || "—",
           vlanTagIds:     info.vlan_tag_ids   || "—",
           physPorts:      info.phys_ports     || "—",
-          bridgedVlans:   info.bridged_vlans  ||
-                          info.vlan_tag_ids   ||
-                          (trunkRow && trunkRow.addl_vlan_ids)  ||
-                          (trunkRow && trunkRow.port_vlan_id)   || "—",
+          bridgedVlans:   bridgedVlans,
+          allBridgedVlans: allBridgedVlans,
         });
       });
     });
 
-    // Use the first SEA entry as the primary bridge; if none found, create a placeholder
-    var primarySea = seaEntries[0] || {
-      viosName:     (serverRows[0] && serverRows[0].lpar_name) || "VIOS",
-      seaDevice:    "ent?",
-      trunkSlot:    (serverRows[0] && serverRows[0].slot_num)  || "?",
-      vswitch:      (serverRows[0] && serverRows[0].vswitch)   || "DefaultSwitch",
-      realAdapter:  "unknown",
-      linkSpeed:    "—",
-      linkStatus:   "—",
-      physPorts:    "—",
-      bridgedVlans: (serverRows[0] && serverRows[0].addl_vlan_ids) || "—",
-    };
+    // If no SEA entries discovered, build a single placeholder so the graph
+    // still renders with client LPARs visible.
+    if (seaEntries.length === 0) {
+      seaEntries.push({
+        viosName:       (serverRows[0] && serverRows[0].lpar_name) || "VIOS",
+        seaDevice:      "ent?",
+        trunkSlot:      (serverRows[0] && serverRows[0].slot_num)  || "?",
+        vswitch:        (serverRows[0] && serverRows[0].vswitch)   || "DefaultSwitch",
+        realAdapter:    "unknown",
+        linkSpeed:      "—", linkStatus: "—", logicalStatus: "—",
+        virtualAdapter: "—", portVlan: "—", vlanTagIds: "—",
+        physPorts:      "—",
+        bridgedVlans:   (serverRows[0] && serverRows[0].addl_vlan_ids) || "—",
+        allBridgedVlans: [],
+      });
+    }
 
-    // Deduplicate client LPARs (same lpar_name may appear on multiple adapters)
+    // ── Column X coordinates ─────────────────────────────────────────────────
+    // client(-560) → sea_bridge(−140) → phys(+160)
+    // SEA and Physical nodes are ~300px apart; group box wraps both.
+    var MX = { client: -560, sea: -140, vios: 200, phys: 160 };
+
+    // ── Deduplicate client LPARs ─────────────────────────────────────────────
     var seenClients = {};
     var uniqueClients = [];
-    clientRows.forEach(function (r, i) {
+    clientRows.forEach(function (r) {
       if (r.lpar_name && !seenClients[r.lpar_name]) {
         seenClients[r.lpar_name] = true;
         uniqueClients.push({
-          id:         "c" + i,
+          id:         "vc_" + r.lpar_name.replace(/[^a-zA-Z0-9]/g, "_"),
           name:       r.lpar_name,
-          lparId:     r.lpar_id     || "?",
-          clientSlot: r.slot_num    || "?",
+          lparId:     r.lpar_id      || "?",
+          clientSlot: r.slot_num     || "?",
           pvid:       r.port_vlan_id || "?",
-          vswitch:    r.vswitch     || "DefaultSwitch",
+          vswitch:    r.vswitch      || "DefaultSwitch",
+        });
+      }
+    });
+    if (uniqueClients.length === 0) {
+      uniqueClients.push({
+        id: "vc_placeholder", name: "(no client LPARs found)", lparId: "—",
+        clientSlot: "?", pvid: "?", vswitch: seaEntries[0].vswitch,
+      });
+    }
+
+    // ── LEFT column: Client LPAR nodes ──────────────────────────────────────
+    var clientGap = uniqueClients.length > 12 ? 90 : 120;
+    var cy = rows(uniqueClients.length, clientGap);
+    uniqueClients.forEach(function (c, i) {
+      nodes.push(box(c.id,
+        "<b>" + c.name + "</b>\nID " + c.lparId + " · Slot C" + c.clientSlot,
+        "client",
+        MX.client, cy[i],
+        "━━ lshwres (eth) ━━\n" +
+        "lpar_name: " + c.name + "\n" +
+        "lpar_id: " + c.lparId + "\n" +
+        "adapter_type: client\n" +
+        "slot_num (CXX): C" + c.clientSlot + "\n" +
+        "port_vlan_id (PVID): " + c.pvid + "\n" +
+        "vswitch: " + c.vswitch
+      ));
+    });
+
+    // ── Collect unique VIOS names (for group-box rendering) ─────────────────
+    var viosNames = [];
+    seaEntries.forEach(function (sea) {
+      if (viosNames.indexOf(sea.viosName) < 0) viosNames.push(sea.viosName);
+    });
+
+    // ── Layout: place SEA + Physical nodes grouped per VIOS ─────────────────
+    // Each VIOS gets a vertical band of rows. Within that band:
+    //   • SEA bridge node(s) in the MIDDLE column (MX.sea)
+    //   • Physical adapter node(s) in the RIGHT column (MX.phys)
+    // The band is separated by a small gap between VIOS groups.
+    var SEA_ROW_H  = 140;   // vertical pixels per row within a VIOS group
+    var GROUP_PAD  = 30;    // extra padding above/below nodes inside the group box
+    var GROUP_GAP  = 50;    // gap between two consecutive VIOS group boxes
+
+    // Assign Y positions per VIOS group, stacking groups top-to-bottom.
+    // viosGroupInfo[viosName] = { seaNodeIds[], physNodeIds[], startY, endY }
+    var viosGroupInfo = {};
+    var cursorY = 0;
+
+    viosNames.forEach(function (vname, vi) {
+      if (vi > 0) cursorY += GROUP_GAP;
+      var seas  = seaEntries.filter(function (s) { return s.viosName === vname; });
+      // Collect unique physical adapters for this VIOS
+      var physKeys = [];
+      seas.forEach(function (s) {
+        var pk = vname + "::" + s.realAdapter;
+        if (physKeys.indexOf(pk) < 0) physKeys.push(pk);
+      });
+      var nRows = Math.max(seas.length, physKeys.length);
+      // Centre the group around cursorY
+      var groupHeight = (nRows - 1) * SEA_ROW_H;
+      var topY        = cursorY - groupHeight / 2;
+
+      viosGroupInfo[vname] = {
+        seaEntries:  seas,
+        physKeys:    physKeys,
+        seaNodeIds:  [],
+        physNodeIds: [],
+        topY:        topY,
+        bottomY:     topY + groupHeight,
+        nRows:       nRows,
+      };
+      cursorY += groupHeight / 2;
+      // Next group starts below this one
+      cursorY += groupHeight / 2;
+    });
+
+    // ── MIDDLE column: SEA Bridge nodes (one per discovered SEA) ────────────
+    var seaNodeIds = {};
+
+    viosNames.forEach(function (vname) {
+      var grp = viosGroupInfo[vname];
+      var seaRowYs = rows(grp.seaEntries.length, SEA_ROW_H);
+      // Map seaRowYs relative to group centre
+      var groupCentreY = (grp.topY + grp.bottomY) / 2;
+
+      grp.seaEntries.forEach(function (sea, i) {
+        var seaNodeId = "sea_" + vname.replace(/[^a-zA-Z0-9]/g, "_") + "_" + sea.seaDevice;
+        seaNodeIds[vname + "::" + sea.seaDevice] = seaNodeId;
+        grp.seaNodeIds.push(seaNodeId);
+
+        var vaDisplay = (sea.virtualAdapter && sea.virtualAdapter !== "—" &&
+                         sea.virtualAdapter !== sea.seaDevice)
+          ? " · " + sea.virtualAdapter : "";
+
+        var statusUpper = (sea.linkStatus || "").trim().toUpperCase();
+        var statusArrow, seaBorderColor, seaBgColor, seaFontColor;
+        if (statusUpper === "UP" || statusUpper.startsWith("UP")) {
+          statusArrow    = "\u25b2 UP";
+          seaBorderColor = "#94a3b8"; seaBgColor = C.mid.bg; seaFontColor = C.mid.font;
+        } else if (statusUpper === "DOWN" || statusUpper.startsWith("DOWN")) {
+          statusArrow    = "\u25bc DOWN";
+          seaBorderColor = "#dc2626"; seaBgColor = "#fef2f2"; seaFontColor = "#991b1b";
+        } else {
+          statusArrow    = "";
+          seaBorderColor = C.mid.border; seaBgColor = C.mid.bg; seaFontColor = C.mid.font;
+        }
+
+        // SEA label — no VIOS name (VIOS shown in the group box label instead)
+        var seaLabel =
+          "<b>Slot " + sea.trunkSlot + " (" + sea.seaDevice + " \u2014 SEA)</b>\n" +
+          (vaDisplay ? "Virtual: " + sea.virtualAdapter + "\n" : "") +
+          "vSwitch: " + sea.vswitch + "\n" +
+          (statusArrow ? statusArrow + "  " : "") +
+          "<i>VLANs: " + sea.bridgedVlans + "</i>";
+
+        var seaTip =
+          "━━ lshwres (eth) server adapter ━━\n" +
+          "adapter_type: server (trunk)\n" +
+          "VIOS: " + vname + "\n" +
+          "slot_num (trunk): " + sea.trunkSlot + "\n" +
+          "vswitch: " + sea.vswitch + "\n" +
+          "is_trunk: 1\n" +
+          "addl_vlan_ids: " + sea.bridgedVlans + "\n\n" +
+          "━━ lsdev | grep -i shared (Step 2) ━━\n" +
+          "device: " + sea.seaDevice + "\n" +
+          "description: Shared Ethernet Adapter\n\n" +
+          "━━ entstat -all " + sea.seaDevice + " grep fields (Step 3) ━━\n" +
+          "Real Adapter: " + sea.realAdapter + "\n" +
+          "Virtual Adapter: " + (sea.virtualAdapter !== "—" ? sea.virtualAdapter : sea.seaDevice) + "\n" +
+          "Physical Port Link Status: " + sea.linkStatus + "\n" +
+          (sea.logicalStatus !== "—" ? "Logical Port Link Status: " + sea.logicalStatus + "\n" : "") +
+          "Physical Port Speed: " + sea.linkSpeed + "\n" +
+          "Port VLAN ID: " + sea.portVlan + "\n" +
+          "VLAN Tag IDs: " + sea.vlanTagIds;
+
+        var nodeY = groupCentreY + seaRowYs[i];
+        var seaNode = box(seaNodeId, seaLabel, "mid", MX.sea, nodeY, seaTip);
+        seaNode.color = {
+          background: seaBgColor, border: seaBorderColor,
+          highlight: { background: seaBgColor, border: seaBorderColor },
+        };
+        seaNode.font = { color: seaFontColor, size: 13, face: "Inter, sans-serif", multi: "html", align: "center" };
+        // Tag node with group membership so afterDrawing can find it
+        seaNode._viosGroup = vname;
+        nodes.push(seaNode);
+      });
+    });
+
+    // ── RIGHT column: Physical Real Adapter nodes (deduplicated per VIOS+adapter) ─
+    var physNodeIdOf = {};
+
+    viosNames.forEach(function (vname) {
+      var grp = viosGroupInfo[vname];
+      var physRows = rows(grp.physKeys.length, SEA_ROW_H);
+      var groupCentreY = (grp.topY + grp.bottomY) / 2;
+
+      grp.physKeys.forEach(function (pkey, i) {
+        // Find the SEA entry whose realAdapter matches this physKey
+        var sea = seaEntries.find(function (s) { return (vname + "::" + s.realAdapter) === pkey; });
+        if (!sea) return;
+
+        var physNodeId = "phys_" + vname.replace(/[^a-zA-Z0-9]/g, "_") +
+                         "_" + sea.realAdapter.replace(/[^a-zA-Z0-9]/g, "_");
+        physNodeIdOf[pkey] = physNodeId;
+        grp.physNodeIds.push(physNodeId);
+
+        var statusText  = (sea.linkStatus || "").trim();
+        var statusUpper = statusText.toUpperCase();
+        var statusArrow, physBorderColor, physBgColor, physFontColor;
+        if (statusUpper === "UP" || statusUpper.startsWith("UP")) {
+          statusArrow     = "\u25b2 UP";
+          physBorderColor = "#16a34a"; physBgColor = "#f0fdf4"; physFontColor = "#166534";
+        } else if (statusUpper === "DOWN" || statusUpper.startsWith("DOWN")) {
+          statusArrow     = "\u25bc DOWN";
+          physBorderColor = "#dc2626"; physBgColor = "#fef2f2"; physFontColor = "#991b1b";
+        } else {
+          statusArrow     = "\u25cf \u2014";
+          physBorderColor = "#7c3aed"; physBgColor = C.phys.bg; physFontColor = C.phys.font;
+        }
+
+        var nodeY = groupCentreY + physRows[i];
+        var physNode = box(physNodeId,
+          "<b>" + sea.realAdapter + "</b>\nEtherChannel / Physical\n" + statusArrow + "\n<i>" + sea.linkSpeed + "</i>",
+          "phys",
+          MX.phys, nodeY,
+          "━━ entstat -all " + sea.seaDevice + " (Step 3) ━━\n" +
+          "Real Adapter: " + sea.realAdapter + "\n" +
+          "Physical Ports: " + sea.physPorts + "\n" +
+          "Link Status: " + sea.linkStatus + "\n" +
+          "Link Speed: " + sea.linkSpeed + "\n" +
+          "Bridged VLANs: " + sea.bridgedVlans
+        );
+        physNode.color = {
+          background: physBgColor, border: physBorderColor,
+          highlight: { background: physBgColor, border: physBorderColor },
+        };
+        physNode.font = { color: physFontColor, size: 13, face: "Inter, sans-serif", multi: "html", align: "center" };
+        physNode.borderWidth = 3;
+        // Tag node with group membership
+        physNode._viosGroup = vname;
+        nodes.push(physNode);
+      });
+    });
+
+    // ── EDGES ────────────────────────────────────────────────────────────────
+
+    // Helper: check whether a client LPAR should connect to a given SEA.
+    function clientMatchesSea(client, sea) {
+      if (client.vswitch !== sea.vswitch) return false;
+      if (sea.allBridgedVlans.length === 0) return true;
+      return sea.allBridgedVlans.indexOf(String(client.pvid)) >= 0;
+    }
+
+    // Client LPAR → SEA Bridge edges
+    uniqueClients.forEach(function (c) {
+      var connected = false;
+      seaEntries.forEach(function (sea) {
+        var seaNodeId = seaNodeIds[sea.viosName + "::" + sea.seaDevice];
+        if (clientMatchesSea(c, sea)) {
+          edges.push(edge(c.id, seaNodeId,
+            "Slot C" + c.clientSlot + "\n(PVID " + c.pvid + ")",
+            "━━ lshwres client adapter ━━\n" +
+            "lpar_name: " + c.name + "\n" +
+            "slot_num: C" + c.clientSlot + "\n" +
+            "port_vlan_id (PVID): " + c.pvid + "\n" +
+            "vswitch: " + c.vswitch + "\n" +
+            "Frames tagged to SEA trunk slot " + sea.trunkSlot
+          ));
+          connected = true;
+        }
+      });
+      if (!connected) {
+        seaEntries.forEach(function (sea) {
+          if (c.vswitch === sea.vswitch) {
+            var seaNodeId = seaNodeIds[sea.viosName + "::" + sea.seaDevice];
+            edges.push(edge(c.id, seaNodeId,
+              "Slot C" + c.clientSlot + "\n(PVID " + c.pvid + ")",
+              "━━ lshwres client adapter ━━\n" +
+              "lpar_name: " + c.name + "\n" +
+              "slot_num: C" + c.clientSlot + "\n" +
+              "port_vlan_id (PVID): " + c.pvid + "\n" +
+              "vswitch: " + c.vswitch
+            ));
+            connected = true;
+          }
+        });
+      }
+      if (!connected) {
+        seaEntries.forEach(function (sea) {
+          var seaNodeId = seaNodeIds[sea.viosName + "::" + sea.seaDevice];
+          edges.push(edge(c.id, seaNodeId,
+            "Slot C" + c.clientSlot + "\n(PVID " + c.pvid + ")",
+            "lpar_name: " + c.name + "\nslot_num: C" + c.clientSlot + "\npvid: " + c.pvid
+          ));
         });
       }
     });
 
-    // If no client rows at all, show a placeholder
-    if (uniqueClients.length === 0) {
-      uniqueClients.push({
-        id: "c0", name: "(no client LPARs found)", lparId: "—",
-        clientSlot: "?", pvid: "?", vswitch: primarySea.vswitch,
-      });
-    }
+    // SEA → Physical edges (direct, no intermediate VIOS node)
+    seaEntries.forEach(function (sea) {
+      var seaNodeId  = seaNodeIds[sea.viosName + "::" + sea.seaDevice];
+      var pkey       = sea.viosName + "::" + sea.realAdapter;
+      var physNodeId = physNodeIdOf[pkey];
+      if (seaNodeId && physNodeId) {
+        var edgeId = "ep_sea_" + seaNodeId + "_" + physNodeId;
+        if (!edges.find(function (e) { return e.id === edgeId; })) {
+          edges.push(Object.assign(edge(seaNodeId, physNodeId,
+            sea.realAdapter + "\n(Real Adapter)",
+            "━━ entstat -all " + sea.seaDevice + " (Step 3) ━━\n" +
+            "SEA: " + sea.seaDevice + "\n" +
+            "Real Adapter: " + sea.realAdapter + "\n" +
+            "Physical Ports: " + sea.physPorts + "\n" +
+            "Link Status: " + sea.linkStatus + "\n" +
+            "Link Speed: " + sea.linkSpeed
+          ), { id: edgeId }));
+        }
+      }
+    });
 
-    return _buildSeaGraph(primarySea, uniqueClients);
+    // ── Return nodes, edges AND viosGroupInfo for the group-box renderer ─────
+    return { nodes: nodes, edges: edges, viosGroupInfo: viosGroupInfo, groupPad: GROUP_PAD };
   }
 
   // Fetch the live Virtual Network (SEA) topology for the selected managed system.
@@ -1330,6 +1630,11 @@
       label: "",
       arrows: { to: { enabled: false } },
     })));
+    // Store vnet group-box metadata (from buildVnetFromLive) on the NET entry
+    // so the afterDrawing handler can access it for transparent VIOS group boxes.
+    const srcGroupInfo = (tab === "vnet" && src.viosGroupInfo) ? src.viosGroupInfo : null;
+    const srcGroupPad  = (tab === "vnet" && src.groupPad)     ? src.groupPad      : 30;
+
     if (NET[tab] && NET[tab].network) { NET[tab].network.destroy(); }
     FOCUS_MODE[tab] = false;
     const network = new vis.Network(container, { nodes: nodes, edges: edges }, VIS_OPTIONS);
@@ -1379,6 +1684,86 @@
       const allNodes  = nodes.get();
       const nodeMap   = {};
       allNodes.forEach((n) => { nodeMap[n.id] = n; });
+
+      // ── VIOS Group Boxes (vnet tab only) ──────────────────────────────────
+      // Draw a transparent rounded-rectangle behind the SEA + Physical nodes
+      // that belong to each VIOS, with the VIOS name at the bottom of the box.
+      // This replaces the standalone VIOS node column.
+      if (srcGroupInfo) {
+        Object.keys(srcGroupInfo).forEach(function (vname) {
+          var grp = srcGroupInfo[vname];
+          // Collect real-time bounding boxes for all nodes in this group.
+          var allGroupNodeIds = grp.seaNodeIds.concat(grp.physNodeIds);
+          var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          var anyVisible = false;
+          allGroupNodeIds.forEach(function (nid) {
+            var nd = nodeMap[nid];
+            if (!nd || nd.hidden) return;
+            var bb = network.getBoundingBox(nid);
+            if (!bb) return;
+            anyVisible = true;
+            if (bb.left   < minX) minX = bb.left;
+            if (bb.right  > maxX) maxX = bb.right;
+            if (bb.top    < minY) minY = bb.top;
+            if (bb.bottom > maxY) maxY = bb.bottom;
+          });
+          if (!anyVisible) return;
+
+          // Expand by padding
+          var PAD  = srcGroupPad;
+          var LABEL_H = 22;     // reserve space at bottom for the VIOS name label
+          var rx = minX - PAD;
+          var ry = minY - PAD;
+          var rw = (maxX - minX) + PAD * 2;
+          var rh = (maxY - minY) + PAD * 2 + LABEL_H;
+          var radius = 14;
+
+          ctx.save();
+
+          // Transparent filled rounded rect — light blue tint (VIOS colour family)
+          ctx.beginPath();
+          ctx.moveTo(rx + radius, ry);
+          ctx.lineTo(rx + rw - radius, ry);
+          ctx.arcTo(rx + rw, ry,           rx + rw, ry + radius,      radius);
+          ctx.lineTo(rx + rw, ry + rh - radius);
+          ctx.arcTo(rx + rw, ry + rh,      rx + rw - radius, ry + rh, radius);
+          ctx.lineTo(rx + radius, ry + rh);
+          ctx.arcTo(rx,      ry + rh,      rx, ry + rh - radius,      radius);
+          ctx.lineTo(rx, ry + radius);
+          ctx.arcTo(rx,      ry,           rx + radius, ry,            radius);
+          ctx.closePath();
+
+          // Fill: very faint blue — almost transparent so nodes show through
+          ctx.fillStyle = "rgba(219,234,254,0.22)";   // ~blue-100 @ 22% opacity
+          ctx.fill();
+
+          // Border: dashed blue line
+          ctx.strokeStyle = "rgba(37,99,235,0.45)";   // blue-600 @ 45%
+          ctx.lineWidth   = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // VIOS name label — bottom-centre of the box
+          var labelX = rx + rw / 2;
+          var labelY = ry + rh - 5;
+
+          // White halo
+          ctx.font         = "bold 12px Inter, sans-serif";
+          ctx.textAlign    = "center";
+          ctx.textBaseline = "bottom";
+          ctx.lineWidth    = 3;
+          ctx.strokeStyle  = "rgba(255,255,255,0.9)";
+          ctx.strokeText(vname, labelX, labelY);
+
+          // Blue text
+          ctx.fillStyle = "#1e40af";   // blue-800
+          ctx.fillText(vname, labelX, labelY);
+
+          ctx.restore();
+        });
+      }
+      // ── end VIOS Group Boxes ──────────────────────────────────────────────
 
       // ── Fan-out: when multiple edges share the same source OR target node,
       //    spread their attachment points vertically so legs don't overlap.
