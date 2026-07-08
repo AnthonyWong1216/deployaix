@@ -71,13 +71,35 @@
     </div>
     <div class="modal-body">
       <p id="lam-msg"></p>
+
+      <!-- Activation options (profile + boot mode) — shown only for activate -->
+      <div id="lam-activate-opts" style="display:none;margin-top:12px">
+        <div class="form-group" style="margin-bottom:10px">
+          <label class="label-inline" for="lam-profile">Profile</label>
+          <select id="lam-profile" class="input" style="width:100%">
+            <option value="">— use current profile —</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="label-inline" for="lam-mode">Boot mode</label>
+          <select id="lam-mode" class="input" style="width:100%">
+            <option value="norm">Normal</option>
+            <option value="sms">SMS</option>
+            <option value="dd">Diagnostic (DD)</option>
+            <option value="of">Open Firmware (OF)</option>
+          </select>
+        </div>
+      </div>
+
       <div id="lam-result" class="result-box hidden"></div>
     </div>
+
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('lpar-action-modal')">Cancel</button>
       <button class="btn btn-primary" id="lam-confirm-btn">Confirm</button>
     </div>
-  </div>
+  </dv>
 </div>
 
 {% endblock %}
@@ -584,19 +606,64 @@ function confirmAction(lparId, name, action) {
   document.getElementById("lam-title").textContent = (labels[action] || action) + " LPAR";
   document.getElementById("lam-msg").innerHTML = msgs[action] || `Perform ${action} on ${name}?`;
   document.getElementById("lam-result").classList.add("hidden");
+
+  // Show profile + boot mode inputs only when activating.
+  const opts = document.getElementById("lam-activate-opts");
+  if (action === "activate") {
+    opts.style.display = "";
+    document.getElementById("lam-mode").value = "norm";
+    loadProfilesForLpar(lparId);
+  } else {
+    opts.style.display = "none";
+  }
+
   document.getElementById("lam-confirm-btn").onclick = () => runLparAction(lparId, action);
   document.getElementById("lpar-action-modal").classList.remove("hidden");
 }
+
+// ── Populate the profile dropdown for the given LPAR ───────
+async function loadProfilesForLpar(lparId) {
+  const sel = document.getElementById("lam-profile");
+  sel.innerHTML = '<option value="">Loading profiles…</option>';
+  sel.disabled = true;
+
+  const hmcId = localHMCId || window.activeHMCId;
+  try {
+    const r = await fetch(
+      `/api/hmcs/${hmcId}/managed-systems/${currentSystemId}` +
+      `/lpars/${encodeURIComponent(lparId)}/profiles`
+    );
+    const d = await r.json();
+    if (d.ok && Array.isArray(d.data)) {
+      sel.innerHTML = '<option value="">— use current profile —</option>' +
+        d.data.map(p => `<option value="${p}">${p}</option>`).join("");
+    } else {
+      sel.innerHTML = '<option value="">— use current profile —</option>';
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">— use current profile —</option>';
+  }
+  sel.disabled = false;
+}
+
 
 async function runLparAction(lparId, action) {
   const res = document.getElementById("lam-result");
   res.className = "result-box info"; res.textContent = "Executing…"; res.classList.remove("hidden");
   const hmcId = localHMCId || window.activeHMCId;
+
+  const payload = { action };
+  if (action === "activate") {
+    payload.profile_name = document.getElementById("lam-profile").value.trim();
+    payload.mode = document.getElementById("lam-mode").value;
+  }
+
   const r = await fetch(
     `/api/hmcs/${hmcId}/managed-systems/${currentSystemId}/lpars/${encodeURIComponent(lparId)}/action`,
-    { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action}) }
+    { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) }
   );
   const d = await r.json();
+
   if (d.ok) {
     res.className = "result-box success"; res.textContent = "✓ Action submitted";
     setTimeout(() => { closeModal("lpar-action-modal"); loadLPARs(); }, 1500);

@@ -1135,9 +1135,47 @@ def get_vnet_topology(hmc_id, system_id):
     })
 
 
-@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/lpars/<lpar_id>/action",
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/lpars/<path:lpar_id>/profiles",
+           methods=["GET"])
+def lpar_profiles(hmc_id, system_id, lpar_id):
+    """Return the list of profile names defined for a given LPAR via SSH lssyscfg."""
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    cmd = (f'lssyscfg -m "{system_id}" -r prof '
+           f'--filter "lpar_names={lpar_id}" -F name')
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"],
+        port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+
+    if not result.get("ok"):
+        return jsonify({
+            "ok": False,
+            "error": (result.get("error") or result.get("stderr")
+                      or "lssyscfg failed").strip(),
+            "command": cmd,
+        }), 400
+
+    profiles = []
+    for line in result.get("output", "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("No results") or line.lower().startswith("error"):
+            continue
+        if line not in profiles:
+            profiles.append(line)
+
+    return jsonify({"ok": True, "data": profiles, "command": cmd})
+
+
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/lpars/<path:lpar_id>/action",
            methods=["POST"])
 def lpar_action(hmc_id, system_id, lpar_id):
+
 
     hmc = hmc_store.get(hmc_id)
     if not hmc:
@@ -1146,12 +1184,66 @@ def lpar_action(hmc_id, system_id, lpar_id):
     action = data.get("action")  # activate | shutdown | restart | softstop
     if not action:
         return jsonify({"error": "action required"}), 400
-    client = HMCApiClient(
+
+    # lpar_id from the UI is actually the LPAR name (see get_lpars: id = name).
+    lpar_name = lpar_id
+
+    # Build the chsysstate command based on the requested action.
+    if action == "activate":
+        profile_name = (data.get("profile_name") or "").strip()
+        # boot mode: normal | sms | dd (diagnostic) | of (open firmware)
+        boot_mode = (data.get("mode") or "norm").strip()
+        # Normalise a few friendly aliases to the chsysstate -b values.
+        mode_map = {
+            "normal": "norm",
+            "norm":   "norm",
+            "sms":    "sms",
+            "dd":     "dd",
+            "of":     "of",
+            "open_firmware": "of",
+        }
+        boot_mode = mode_map.get(boot_mode.lower(), boot_mode)
+
+        cmd = (f'chsysstate -m "{system_id}" -o on -n "{lpar_name}" '
+               f'-r lpar -b {boot_mode}')
+        if profile_name:
+            cmd += f' -f "{profile_name}"'
+    elif action == "shutdown":
+        # Hard power off (immediate)
+        cmd = (f'chsysstate -m "{system_id}" -o shutdown -n "{lpar_name}" '
+               f'-r lpar --immed')
+    elif action == "softstop":
+        # Graceful OS shutdown
+        cmd = (f'chsysstate -m "{system_id}" -o osshutdown -n "{lpar_name}" '
+               f'-r lpar')
+    elif action == "restart":
+        # Immediate restart
+        cmd = (f'chsysstate -m "{system_id}" -o shutdown -n "{lpar_name}" '
+               f'-r lpar --immed --restart')
+    else:
+        return jsonify({"ok": False, "error": f"Unknown action: {action}"}), 400
+
+    result = ssh_manager.run_hmc_command(
         host=hmc["host"],
-        port=int(hmc.get("api_port", 443)),
-        session_id=hmc.get("session_id"),
+        port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
     )
-    return jsonify(client.lpar_action(system_id, lpar_id, action))
+
+    if result.get("ok"):
+        return jsonify({
+            "ok":      True,
+            "message": result.get("output", "").strip() or "Action submitted.",
+            "command": cmd,
+        })
+    return jsonify({
+        "ok":      False,
+        "error":   (result.get("error") or result.get("stderr")
+                    or "chsysstate failed").strip(),
+        "command": cmd,
+    }), 400
+
 
 
 # ──────────────────────────────────────────────────────────
