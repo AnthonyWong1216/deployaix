@@ -534,6 +534,15 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
             "phyio": (
                 f'lshwres -r io --rsubtype slot -m {m} --filter {f} '
                 f'-F lpar_name:drc_name:description:feature_codes'
+            ),
+            # Physical Fibre Channel HBAs assigned to the LPAR.
+            # lshwres -r io --rsubtype slot returns the physical location
+            # (drc_name / phys_loc) and description of every physical adapter
+            # owned by the partition; we later filter for Fibre Channel ones
+            # and pull each port's WWPN from lsnportlogin.
+            "phyfc": (
+                f'lshwres -r io --rsubtype slot -m {m} --filter {f} '
+                f'-F lpar_name:drc_index:drc_name:description:phys_loc'
             )
         }
     )
@@ -543,6 +552,8 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
     vscsi_r  = raw["vscsi"]
     vfc_r    = raw["vfc"]
     phyio_r  = raw["phyio"]
+    phyfc_r  = raw["phyfc"]
+
 
     def parse_lines(res, fields):
         """Parse colon-separated lines; skip lines that start with error text."""
@@ -568,17 +579,190 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
     vscsi_fields  = ["lpar_name","slot","remote_lpar","remote_slot"]
     vfc_fields    = ["lpar_name","slot","wwpns","remote_lpar","remote_slot"]
     phyio_fields  = ["lpar_name","drc_name","description","feature_codes"]
+    phyfc_fields  = ["lpar_name","drc_index","drc_name","description","phys_loc"]
+
+    def parse_phyfc(res):
+        """Parse physical I/O slots and keep only Fibre Channel HBAs.
+
+        The HMC ``lshwres -r io --rsubtype slot`` output gives us the physical
+        location code (``drc_name`` / ``phys_loc``) and the adapter description
+        for every physical adapter owned by the partition.  We keep only the
+        Fibre Channel ones.  The port WWPN is *not* available from lshwres and
+        is filled in later (see ``_enrich_phyfc_wwpn``) by querying the VIOS.
+
+        Returns a list of dicts shaped for the frontend:
+            {lpar_name, adapter_id, port_index, location, description, wwpn}
+        """
+        rows = parse_lines(res, phyfc_fields)
+        out = []
+        for i, r in enumerate(rows):
+            desc = (r.get("description") or "").lower()
+            # Only keep physical Fibre Channel adapters
+            if "fibre" not in desc and "fiber" not in desc and "fc" not in desc:
+                continue
+            location = r.get("phys_loc") or r.get("drc_name") or ""
+            # Derive a stable adapter id / port index from the location code.
+            # e.g. U78D5.001.ABC-P1-C2-T1  → adapter "C2", port "T1"
+            adapter_id = ""
+            port_index = ""
+            for token in location.split("-"):
+                token = token.strip()
+                if token.upper().startswith("C") and token[1:].isdigit():
+                    adapter_id = token
+                elif token.upper().startswith("T") and token[1:].isdigit():
+                    port_index = token
+            out.append({
+                "lpar_name":   r.get("lpar_name", ""),
+                "adapter_id":  adapter_id or r.get("drc_index", str(i)),
+                "port_index":  port_index or "—",
+                "location":    location or "—",
+                "description": r.get("description", ""),
+                "wwpn":        "",   # filled in by _enrich_phyfc_wwpn
+            })
+        return out
+
+    def _norm_loc(loc):
+        """Normalise a physical location code for matching between the HMC
+        (lshwres phys_loc) and the VIOS (lscfg second column).
+
+        The HMC often prefixes the code with the machine/serial (e.g.
+        ``U78C9.001.WXYZ123-P1-C11-T1``) while lscfg reports the same trailing
+        ``...-P1-C11-T1``.  Compare on the ``-P.../-C.../-T...`` tail so both
+        representations line up.
+        """
+        loc = (loc or "").strip().upper()
+        # Keep everything from the first '-P' onwards; that tail is stable
+        idx = loc.find("-P")
+        return loc[idx:] if idx != -1 else loc
+
+    def _enrich_phyfc_wwpn(phyfc_rows):
+        """Fill in each physical FC port's WWPN + link status by querying the VIOS.
+
+        Collection method (as confirmed on the VIOS):
+
+            viosvrcmd -m <system> -p <VIOS_lpar> -c "fcstat fcsX"
+
+        The fcstat output contains::
+
+            ...
+            World Wide Node Name: 0x2000F4C7AA652388   <-- WWPN (node name)
+            ...
+            Attention Type:   Link Up                  <-- link status
+
+        Because ``fcstat`` does not print the physical location code, we also
+        run ``lscfg -vl fcsX`` for every device to obtain the location code and
+        match it back to the ``lshwres`` phyfc rows.
+
+        We:
+          1. list the fcs* devices on the VIOS (lsdev),
+          2. run ``lscfg -vl fcsX`` (location) and ``fcstat fcsX`` (WWPN + link)
+             for each device over a single batched SSH connection,
+          3. match each device's location code to the lshwres phyfc row and
+             copy in the World Wide Node Name and link status.
+        """
+        if not phyfc_rows:
+            return phyfc_rows
+
+        # The detail view is per-LPAR; treat that LPAR as the VIOS to query.
+        vios = lpar_id
+
+        # ── 1. list fcs* devices on the VIOS ──
+        lsdev_cmd = (f'viosvrcmd -m {m} -p "{vios}" '
+                     f'-c "lsdev -type adapter -field name" | grep -i fcs')
+        lsdev_res = ssh_manager.run_hmc_command(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            command=lsdev_cmd,
+        )
+        fcs_devs = []
+        if lsdev_res.get("ok"):
+            for line in lsdev_res["output"].splitlines():
+                tok = line.strip().split()
+                if tok and tok[0].lower().startswith("fcs"):
+                    if tok[0] not in fcs_devs:
+                        fcs_devs.append(tok[0])
+        if not fcs_devs:
+            return phyfc_rows
+
+        # ── 2. lscfg (location) + fcstat (WWPN & link) per device, one batch ──
+        batch_cmds = {}
+        for dev in fcs_devs:
+            batch_cmds[f"loc::{dev}"] = (
+                f'viosvrcmd -m {m} -p "{vios}" -c "lscfg -vl {dev}"')
+            batch_cmds[f"stat::{dev}"] = (
+                f'viosvrcmd -m {m} -p "{vios}" '
+                f'-c "fcstat {dev}" | grep -iE "World Wide Node Name|Attention Type"')
+        batch_raw = ssh_manager.run_hmc_commands_batch(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            commands=batch_cmds,
+        )
+
+        # ── 3. per device: location code (from lscfg) + wwpn/link (from fcstat)
+        loc_to_info = {}
+        for dev in fcs_devs:
+            # location code from lscfg header line
+            dev_loc = ""
+            loc_res = batch_raw.get(f"loc::{dev}", {})
+            if loc_res.get("ok"):
+                for line in loc_res["output"].splitlines():
+                    s = line.strip()
+                    if s.lower().startswith(dev.lower()):
+                        parts = s.split()
+                        if len(parts) >= 2:
+                            dev_loc = parts[1]
+                            break
+
+            # WWPN (World Wide Node Name) + link status from fcstat
+            wwpn = ""
+            link = ""
+            stat_res = batch_raw.get(f"stat::{dev}", {})
+            if stat_res.get("ok"):
+                for line in stat_res["output"].splitlines():
+                    s = line.strip()
+                    low = s.lower()
+                    if "world wide node name" in low:
+                        val = s.split(":", 1)[-1].strip()
+                        # strip a leading 0x and keep hex digits only
+                        val = val[2:] if val.lower().startswith("0x") else val
+                        wwpn = "".join(ch for ch in val
+                                       if ch in "0123456789abcdefABCDEF")
+                    elif "attention type" in low:
+                        link = s.split(":", 1)[-1].strip()
+
+            if dev_loc:
+                loc_to_info[_norm_loc(dev_loc)] = {
+                    "dev": dev, "wwpn": wwpn, "link": link,
+                }
+
+        # ── 4. merge WWPN + link status into the lshwres phyfc rows by location
+        for row in phyfc_rows:
+            info = loc_to_info.get(_norm_loc(row.get("location", "")))
+            if info:
+                row["wwpn"] = info["wwpn"]
+                row["device"] = info["dev"]
+                row["link_status"] = info["link"]
+        return phyfc_rows
+
+
 
     # Collect per-resource errors (None = success/no-data, string = error msg)
     raw_results = [
         ("cpu",    cpu_r),  ("mem",  mem_r),
         ("veth",   veth_r), ("vscsi",vscsi_r), ("vfc",  vfc_r),
-        ("phyio", phyio_r)
+        ("phyio", phyio_r), ("phyfc", phyfc_r)
     ]
     errors = {k: v.get("error") for k, v in raw_results if not v.get("ok")}
 
+
     # Always include raw output in debug mode so the UI can show it
     debug = request.args.get("debug") == "1"
+
+    # Build the physical FC list from lshwres, then enrich each port's WWPN
+    # by querying the VIOS with "lscfg -vl fcsX" (matched by location code).
+    phyfc_rows = _enrich_phyfc_wwpn(parse_phyfc(phyfc_r))
 
     result = {
         "ok":    True,
@@ -588,11 +772,14 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
         "vscsi": parse_lines(vscsi_r,  vscsi_fields),
         "vfc":   parse_lines(vfc_r,    vfc_fields),
         "phyio": parse_lines(phyio_r, phyio_fields),
+        "phyfc": phyfc_rows,
         "errors": errors,
     }
+
     if debug:
         result["raw"] = {k: v for k, v in raw.items()}
     return jsonify(result)
+
 
 
 @app.route("/api/hmcs/<hmc_id>/managed-systems/<system_id>/vfc-topology",

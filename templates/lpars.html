@@ -418,11 +418,21 @@ ${wwpns.map(w => `
     <div class="adapter-row">
       ${svgIcon("phyfc")}
       <div class="adapter-info">
-        <span class="adapter-label">FC HBA  Adapter ${e.adapter_id}  Port ${e.port_index}</span>
-        <span class="adapter-detail">WWPN <code>${fmtWWPN(e.wwpn||"—")}</code></span>
-        <span class="adapter-detail">WWPN <code>Without ":" ${e.wwpn}</code></span>
+        <span class="adapter-label">FC HBA ${e.device ? e.device : ""} &nbsp; Adapter ${e.adapter_id||"—"} &nbsp; Port ${e.port_index||"—"}
+          ${e.link_status ? `<span class="badge ${/up/i.test(e.link_status)?"badge-green":"badge-red"}" style="margin-left:6px;font-size:10px">${e.link_status}</span>` : ""}
+        </span>
+        <span class="adapter-detail">Location <code>${e.location||"—"}</code></span>
+        ${e.description ? `<span class="adapter-detail">${e.description}</span>` : ""}
+        <span class="adapter-detail wwpn">WWP
+          <code title="Copy Formatted" onclick="copyToClipboard('${e.wwpn ? fmtWWPN(e.wwpn) : ""}')" style="cursor:pointer">
+            ${e.wwpn ? fmtWWPN(e.wwpn) : "n/a (VIOS query returned no data)"}
+          </code>
+        </span>
       </div>
     </div>`).join("") || none;
+
+
+
 
   // ── Error notes (only real errors, not "no resource" noise) ──
   const errNotes = Object.entries(d.errors||{})
