@@ -12,6 +12,9 @@ from flask_socketio import SocketIO, emit
 from modules.ssh_manager import SSHManager
 from modules.hmc_api import HMCApiClient
 from modules.hmc_store import HMCStore
+from modules.san_store import SANStore
+from modules.san_manager import SANManager
+
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -22,6 +25,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 ssh_manager = SSHManager()
 hmc_store = HMCStore()
+san_store = SANStore()
+san_manager = SANManager(ssh_manager)
+
 
 # ──────────────────────────────────────────────────────────
 # Page routes
@@ -219,6 +225,17 @@ def storage_page():
 @app.route("/jobs")
 def jobs_page():
     return render_template("jobs.html")
+
+
+@app.route("/san-switches")
+def san_switches_page():
+    return render_template("san_switches.html")
+
+
+@app.route("/zoning")
+def zoning_page():
+    return render_template("zoning.html")
+
 
 
 # ──────────────────────────────────────────────────────────
@@ -1434,11 +1451,79 @@ def lpar_action(hmc_id, system_id, lpar_id):
 
 
 # ──────────────────────────────────────────────────────────
+# SAN switch management API (read-only for now)
+# ──────────────────────────────────────────────────────────
+
+@app.route("/api/san/switches", methods=["GET"])
+def list_san_switches():
+    """Return all saved SAN switches (secrets stripped)."""
+    return jsonify(san_store.list())
+
+
+@app.route("/api/san/switches", methods=["POST"])
+def add_san_switch():
+    """Save a new SAN switch entry."""
+    data = request.get_json(force=True) or {}
+    required = ["name", "host"]
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+    entry = san_store.add(data)
+    return jsonify(entry), 201
+
+
+@app.route("/api/san/switches/<switch_id>", methods=["DELETE"])
+def delete_san_switch(switch_id):
+    san_store.remove(switch_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/san/switches/<switch_id>/test", methods=["POST"])
+def test_san_switch(switch_id):
+    """Test SSH connectivity to a SAN switch."""
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"error": "Switch not found"}), 404
+    result = ssh_manager.test_connection(
+        host=sw["host"],
+        port=int(sw.get("ssh_port", 22)),
+        username=sw.get("username", "admin"),
+        key_path=sw.get("key_path") or None,
+        password=sw.get("password") or None,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/san/switches/<switch_id>/zoning", methods=["GET"])
+def get_san_zoning(switch_id):
+    """Return the read-only fabric view: aliases, zones, zonesets, active cfg."""
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    debug = request.args.get("debug") == "1"
+    result = san_manager.fetch_zoning(sw, debug=debug)
+    return jsonify(result)
+
+
+@app.route("/api/san/switches/<switch_id>/ports", methods=["GET"])
+def get_san_ports(switch_id):
+    """Return the switch port status list (index, state, speed, wwn, type)."""
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    debug = request.args.get("debug") == "1"
+    result = san_manager.fetch_ports(sw, debug=debug)
+    return jsonify(result)
+
+
+
+# ──────────────────────────────────────────────────────────
 # WebSocket terminal (SSH)
 # ──────────────────────────────────────────────────────────
 
 @socketio.on("ssh_connect")
 def handle_ssh_connect(data):
+
     hmc_id = data.get("hmc_id")
     hmc = hmc_store.get(hmc_id)
     if not hmc:

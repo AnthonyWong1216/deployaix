@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}SAN Switches{% endblock %}
+{% block page_title %}SAN Switches{% endblock %}
+{% block content %}
+
+<div class="toolbar">
+  <button class="btn btn-primary" onclick="openAddModal()">+ Add Switch</button>
+  <button class="btn btn-secondary" onclick="loadSwitches()">↻ Refresh</button>
+</div>
+
+<div class="card">
+  <div class="card-title">Registered SAN Switches</div>
+  <table class="data-table" id="switch-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>Host</th><th>Vendor</th><th>User</th><th>Port</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="switch-tbody">
+      <tr><td colspan="6" class="muted center">No switches registered</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ═══ ADD SWITCH MODAL ═══ -->
+<div class="modal-overlay hidden" id="add-switch-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Add SAN Switch</span>
+      <button class="modal-close" onclick="closeModal('add-switch-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-name">Name</label>
+        <input id="sw-name" class="input" style="width:100%" placeholder="fabric-a-sw1">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-host">Host / IP</label>
+        <input id="sw-host" class="input" style="width:100%" placeholder="10.0.0.10">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-vendor">Vendor</label>
+        <select id="sw-vendor" class="input" style="width:100%">
+          <option value="brocade">Brocade (FOS)</option>
+          <option value="cisco">Cisco (MDS / NX-OS)</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-user">Username</label>
+        <input id="sw-user" class="input" style="width:100%" value="admin">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-port">SSH Port</label>
+        <input id="sw-port" class="input" style="width:100%" value="22">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="label-inline" for="sw-pass">Password</label>
+        <input id="sw-pass" type="password" class="input" style="width:100%"
+               placeholder="(leave blank to use SSH key)">
+      </div>
+      <div class="form-group">
+        <label class="label-inline" for="sw-key">SSH Key Path (optional)</label>
+        <input id="sw-key" class="input" style="width:100%" placeholder="~/.ssh/id_rsa">
+      </div>
+      <div id="sw-result" class="result-box hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-switch-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSwitch()">Save</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadSwitches() {
+  const tbody = document.getElementById("switch-tbody");
+  tbody.innerHTML = '<tr><td colspan="6" class="muted center">Loading…</td></tr>';
+  const data = await fetch("/api/san/switches").then(r => r.json());
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted center">No switches registered</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(s => `
+    <tr>
+      <td><strong>${esc(s.name)}</strong></td>
+      <td class="muted">${esc(s.host)}</td>
+      <td><span class="badge badge-blue">${esc(s.vendor)}</span></td>
+      <td class="muted">${esc(s.username)}</td>
+      <td class="muted">${esc(String(s.ssh_port))}</td>
+      <td class="action-cell">
+        <button class="btn btn-xs btn-secondary" onclick="testSwitch('${s.id}')">Test</button>
+        <a class="btn btn-xs btn-primary" href="/zoning?switch=${s.id}">Zoning</a>
+        <button class="btn btn-xs btn-red" onclick="deleteSwitch('${s.id}','${esc(s.name)}')">Delete</button>
+      </td>
+    </tr>`).join("");
+}
+
+function esc(s) { return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function openAddModal() {
+  document.getElementById("sw-result").classList.add("hidden");
+  document.getElementById("add-switch-modal").classList.remove("hidden");
+}
+function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+
+async function saveSwitch() {
+  const res = document.getElementById("sw-result");
+  const payload = {
+    name:     document.getElementById("sw-name").value.trim(),
+    host:     document.getElementById("sw-host").value.trim(),
+    vendor:   document.getElementById("sw-vendor").value,
+    username: document.getElementById("sw-user").value.trim() || "admin",
+    ssh_port: document.getElementById("sw-port").value.trim() || "22",
+    password: document.getElementById("sw-pass").value,
+    key_path: document.getElementById("sw-key").value.trim(),
+  };
+  if (!payload.name || !payload.host) {
+    res.className = "result-box error"; res.textContent = "Name and Host are required";
+    res.classList.remove("hidden");
+    return;
+  }
+  const r = await fetch("/api/san/switches", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(payload),
+  });
+  if (r.ok) {
+    closeModal("add-switch-modal");
+    loadSwitches();
+  } else {
+    const d = await r.json();
+    res.className = "result-box error"; res.textContent = "✗ " + (d.error || "Failed");
+    res.classList.remove("hidden");
+  }
+}
+
+async function testSwitch(id) {
+  showToast("Testing connection…", "info");
+  const d = await fetch(`/api/san/switches/${id}/test`, { method:"POST" }).then(r => r.json());
+  if (d.ok) showToast("✓ Connected: " + (d.version || "ok"), "success");
+  else showToast("✗ " + (d.error || "Connection failed"), "error");
+}
+
+async function deleteSwitch(id, name) {
+  if (!confirm(`Delete SAN switch "${name}"?`)) return;
+  await fetch(`/api/san/switches/${id}`, { method:"DELETE" });
+  loadSwitches();
+}
+
+document.addEventListener("DOMContentLoaded", loadSwitches);
+</script>
+{% endblock %}

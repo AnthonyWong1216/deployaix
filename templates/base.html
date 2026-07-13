@@ -48,7 +48,18 @@
     Storage
   </a>
 
+  <div class="nav-section-label">SAN Fabric</div>
+  <a href="/san-switches" class="nav-item {% if request.path=='/san-switches' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v3a1 1 0 01-1 1H3a1 1 0 01-1-1V3zm2 1v1h1V4H4zm3 0v1h1V4H7zM2 10a1 1 0 011-1h10a1 1 0 011 1v3a1 1 0 01-1 1H3a1 1 0 01-1-1v-3zm2 1v1h1v-1H4zm3 0v1h1v-1H7z"/></svg>
+    SAN Switches
+  </a>
+  <a href="/zoning" class="nav-item {% if request.path=='/zoning' %}active{% endif %}">
+    <svg viewBox="0 0 16 16"><path d="M8 1a3 3 0 00-1 5.83V9H4a2 2 0 00-2 2v1.17a3 3 0 101 0V11a1 1 0 011-1h8a1 1 0 011 1v1.17a3 3 0 101 0V11a2 2 0 00-2-2H9V6.83A3 3 0 008 1zm0 1a2 2 0 110 4 2 2 0 010-4z"/></svg>
+    Zoning
+  </a>
+
   <div class="nav-section-label">Operations</div>
+
   <a href="/jobs" class="nav-item {% if request.path=='/jobs' %}active{% endif %}">
     <svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM3 8l3 3 5-6"/></svg>
     Jobs &amp; Tasks

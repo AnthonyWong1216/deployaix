@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Zoning{% endblock %}
+{% block page_title %}SAN Zoning (Read-only){% endblock %}
+{% block content %}
+
+<div class="toolbar">
+  <div class="toolbar-group">
+    <label class="label-inline">Switch:</label>
+    <select id="switch-selector" onchange="loadZoning()">
+      <option value="">— select switch —</option>
+    </select>
+  </div>
+  <button class="btn btn-primary" onclick="loadZoning()">↻ Refresh</button>
+  <button class="btn btn-secondary" onclick="loadZoning(true)" title="Show raw CLI output">Debug</button>
+  <span id="active-badge" class="badge badge-green" style="display:none"></span>
+  <div class="toolbar-group" style="margin-left:auto">
+    <label class="label-inline">Search:</label>
+    <input id="zoning-search" class="input" style="width:260px"
+           placeholder="alias, WWPN or zone name…"
+           oninput="applySearch()">
+    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">Clear</button>
+  </div>
+</div>
+
+
+<div id="zoning-content">
+  <div class="card"><div class="muted center">Select a SAN switch above to view its zoning.</div></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const urlParams = new URLSearchParams(window.location.search);
+let _zoningData = null;   // cached fabric data for client-side search
+let _portData = null;     // cached switch port status
+
+
+async function initSwitches() {
+
+  const data = await fetch("/api/san/switches").then(r => r.json());
+  const sel = document.getElementById("switch-selector");
+  sel.innerHTML = '<option value="">— select switch —</option>' +
+    data.map(s => `<option value="${s.id}">${s.name} (${s.host}) · ${s.vendor}</option>`).join("");
+  const pre = urlParams.get("switch");
+  if (pre) { sel.value = pre; loadZoning(); }
+}
+
+function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function loadZoning(debug) {
+  const id = document.getElementById("switch-selector").value;
+  const container = document.getElementById("zoning-content");
+  const badge = document.getElementById("active-badge");
+  if (!id) { showToast("Select a switch first", "warn"); return; }
+
+  container.innerHTML = '<div class="card"><div class="muted center">Loading fabric…</div></div>';
+  badge.style.display = "none";
+
+  const url = `/api/san/switches/${id}/zoning` + (debug ? "?debug=1" : "");
+  let d;
+  try {
+    d = await fetch(url).then(r => r.json());
+  } catch (e) {
+    container.innerHTML = `<div class="card"><div class="result-box error">✗ Network error: ${e}</div></div>`;
+    return;
+  }
+
+  if (!d.ok) {
+    container.innerHTML = `<div class="card"><div class="result-box error">✗ ${esc(d.error || "Failed to load zoning")}</div></div>`;
+    return;
+  }
+
+  if (d.active_zoneset) {
+    badge.textContent = "Active: " + d.active_zoneset;
+    badge.style.display = "";
+  }
+
+  if (debug && d.raw) {
+    _zoningData = null;
+    container.innerHTML = renderDebug(d.raw);
+    return;
+  }
+
+  // Cache the full dataset so search can filter client-side without re-fetching
+  _zoningData = {
+    aliases:        d.aliases || [],
+    zones:          d.zones || [],
+    zonesets:       d.zonesets || [],
+    active_zoneset: d.active_zoneset || "",
+  };
+
+  // Fetch switch port status (non-blocking — graph appears once loaded)
+  loadPorts(id);
+
+  render();
+}
+
+// ── Switch port status graph ──────────────────────────────
+async function loadPorts(id) {
+  _portData = null;
+  try {
+    const d = await fetch(`/api/san/switches/${id}/ports`).then(r => r.json());
+    if (d.ok) _portData = d;
+  } catch (e) {
+    _portData = null;
+  }
+  render();   // re-render so the graph appears above the tables
+}
+
+
+// ── Search / filter ───────────────────────────────────────
+// Matches: alias name, alias member (WWPN), zone name, zoneset name.
+// Zones also match if any of their member aliases match.
+function applySearch() { render(); }
+
+function clearSearch() {
+  document.getElementById("zoning-search").value = "";
+  render();
+}
+
+function currentQuery() {
+  return (document.getElementById("zoning-search").value || "").trim().toLowerCase();
+}
+
+function render() {
+  if (!_zoningData) return;
+  const q = currentQuery();
+  const d = _zoningData;
+
+  let aliases  = d.aliases;
+  let zones    = d.zones;
+  let zonesets = d.zonesets;
+
+  if (q) {
+    // Normalised WWPN comparison: strip colons so "10:00:.." matches "1000.."
+    const qn = q.replace(/:/g, "");
+
+    const aliasMatch = a =>
+      (a.name || "").toLowerCase().includes(q) ||
+      (a.members || []).some(m => {
+        const ml = (m || "").toLowerCase();
+        return ml.includes(q) || ml.replace(/:/g, "").includes(qn);
+      });
+
+    aliases = d.aliases.filter(aliasMatch);
+
+    // Set of alias names that matched — used to also surface parent zones
+    const matchedAliasNames = new Set(aliases.map(a => (a.name || "").toLowerCase()));
+
+    const zoneMatch = z =>
+      (z.name || "").toLowerCase().includes(q) ||
+      (z.members || []).some(m => {
+        const ml = (m || "").toLowerCase();
+        return ml.includes(q) || ml.replace(/:/g, "").includes(qn) ||
+               matchedAliasNames.has(ml);
+      });
+
+    zones = d.zones.filter(zoneMatch);
+
+    const matchedZoneNames = new Set(zones.map(z => (z.name || "").toLowerCase()));
+
+    zonesets = d.zonesets.filter(zs =>
+      (zs.name || "").toLowerCase().includes(q) ||
+      (zs.members || []).some(m => matchedZoneNames.has((m || "").toLowerCase()))
+    );
+  }
+
+  const container = document.getElementById("zoning-content");
+  container.innerHTML =
+    renderPortGraph() +
+    renderZonesets(zonesets, d.active_zoneset) +
+    renderZones(zones) +
+    renderAliases(aliases);
+}
+
+// ── Draw the switch and its ports (up/down status) ────────
+function renderPortGraph() {
+  if (!_portData) {
+    return `<div class="card">
+      <div class="card-title">Switch Ports</div>
+      <div class="muted center">Loading port status…</div>
+    </div>`;
+  }
+
+  const ports = _portData.ports || [];
+  const name  = _portData.switch_name || "SAN Switch";
+  const upCount = ports.filter(p => p.up).length;
+  const total   = ports.length;
+
+  if (!total) {
+    return `<div class="card">
+      <div class="card-title">Switch Ports — ${esc(name)}</div>
+      <div class="muted center">No port data returned</div>
+    </div>`;
+  }
+
+  const q = currentQuery();
+
+  const cells = ports.map(p => {
+    const up   = p.up;
+    // Colour: green = up/online, red = fault, grey = no light / disabled
+    let bg = "#9aa0a6", border = "#7c8085";           // default grey (idle)
+    const st = (p.state || "").toLowerCase();
+    if (up) { bg = "#1a7f37"; border = "#14612a"; }    // green = online
+    else if (/flt|fault|err|fail/.test(st)) { bg = "#d1242f"; border = "#a41722"; } // red = fault
+
+    // Highlight ports whose WWN matches the current search box
+    let ring = "";
+    if (q) {
+      const qn = q.replace(/:/g, "");
+      const w  = (p.wwn || "").toLowerCase();
+      if (w && (w.includes(q) || w.replace(/:/g, "").includes(qn)))
+        ring = "box-shadow:0 0 0 3px #f5a623;";
+    }
+
+    const tip = `Port ${p.index}\nState: ${p.state}\nSpeed: ${p.speed}\nType: ${p.type}`
+              + (p.wwn ? `\nWWN: ${p.wwn}` : "");
+
+    return `<div title="${esc(tip)}" style="
+        width:34px;height:34px;border-radius:5px;display:flex;
+        align-items:center;justify-content:center;font-size:11px;color:#fff;
+        font-weight:600;background:${bg};border:1px solid ${border};${ring}
+        cursor:default;user-select:none;">
+        ${esc(String(p.index))}
+      </div>`;
+  }).join("");
+
+  return `<div class="card">
+    <div class="card-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Switch Ports — ${esc(name)}</span>
+      <span class="badge badge-green">${upCount} up</span>
+      <span class="badge badge-grey">${total - upCount} down/idle</span>
+      <span class="badge badge-blue">${total} total</span>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:14px;margin:6px 0 12px">
+      <!-- simple switch chassis illustration -->
+      <div style="background:#1f2733;border-radius:8px;padding:10px 12px;color:#cbd5e1;
+                  font-size:12px;font-weight:600;letter-spacing:.5px;white-space:nowrap">
+        ▤ ${esc(name)}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;flex:1">${cells}</div>
+    </div>
+
+    <div style="display:flex;gap:16px;font-size:12px" class="muted">
+      <span><span style="display:inline-block;width:12px;height:12px;background:#1a7f37;border-radius:3px;vertical-align:middle;margin-right:4px"></span>Online / Up</span>
+      <span><span style="display:inline-block;width:12px;height:12px;background:#9aa0a6;border-radius:3px;vertical-align:middle;margin-right:4px"></span>No light / Idle</span>
+      <span><span style="display:inline-block;width:12px;height:12px;background:#d1242f;border-radius:3px;vertical-align:middle;margin-right:4px"></span>Fault</span>
+    </div>
+  </div>`;
+}
+
+
+
+function renderZonesets(zonesets, active) {
+  zonesets = zonesets || [];
+  const rows = zonesets.map(z => `
+    <tr>
+      <td><strong>${esc(z.name)}</strong>
+        ${z.name === active ? '<span class="badge badge-green" style="margin-left:6px">active</span>' : ''}</td>
+      <td class="muted">${(z.members||[]).map(esc).join(", ") || "—"}</td>
+    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No zonesets</td></tr>';
+  return `<div class="card">
+    <div class="card-title">Zonesets / Configs (${zonesets.length})</div>
+    <table class="data-table"><thead><tr><th>Name</th><th>Zones</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderZones(zones) {
+  zones = zones || [];
+  const rows = zones.map(z => `
+    <tr>
+      <td><strong>${esc(z.name)}</strong></td>
+      <td class="muted">${(z.members||[]).map(esc).join(", ") || "—"}</td>
+    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No zones</td></tr>';
+  return `<div class="card">
+    <div class="card-title">Zones (${zones.length})</div>
+    <table class="data-table"><thead><tr><th>Name</th><th>Members</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderAliases(aliases) {
+  aliases = aliases || [];
+  const rows = aliases.map(a => `
+    <tr>
+      <td><strong>${esc(a.name)}</strong></td>
+      <td class="muted"><code>${(a.members||[]).map(esc).join(", ") || "—"}</code></td>
+    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No aliases</td></tr>';
+  return `<div class="card">
+    <div class="card-title">Aliases (${aliases.length})</div>
+    <table class="data-table"><thead><tr><th>Name</th><th>WWPN / Member</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderDebug(raw) {
+  let html = '<div class="card"><div class="card-title">Raw CLI output</div>';
+  for (const [key, res] of Object.entries(raw)) {
+    const ok = res.ok;
+    html += `<div style="margin-bottom:14px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:3px">
+        <span class="badge ${ok?'badge-green':'badge-red'}">${ok?'ok':'err'}</span>&nbsp;${esc(key)}
+      </div>
+      <pre class="raw-pre">${esc(ok ? (res.output||'(empty)') : (res.error||''))}</pre>
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+document.addEventListener("DOMContentLoaded", initSwitches);
+</script>
+{% endblock %}

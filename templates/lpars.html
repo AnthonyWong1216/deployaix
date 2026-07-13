@@ -215,7 +215,10 @@ async function loadLPARs() {
         <button class="btn btn-xs btn-green"    onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','activate')">On</button>
         <button class="btn btn-xs btn-orange"   onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','softstop')">Stop</button>
         <button class="btn btn-xs btn-red"      onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','shutdown')">Off</button>
+        <button class="btn btn-xs btn-red"      title="Immediate hard power off (no confirmation)"
+                onclick="immediateShutdown('${esc(p.id)}','${esc(p.name)}')">⚡Off</button>
         <button class="btn btn-xs btn-secondary" onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','restart')">↺</button>
+
       </td>
     </tr>`).join("");
   
@@ -682,7 +685,36 @@ async function runLparAction(lparId, action) {
   }
 }
 
+// ── Immediate hard power off (no confirmation modal) ──────
+// Directly invokes the backend "shutdown" action (chsysstate -o shutdown --immed).
+async function immediateShutdown(lparId, name) {
+  const hmcId = localHMCId || window.activeHMCId;
+  if (!hmcId || !currentSystemId) {
+    showToast("Select an HMC and managed system first", "warn");
+    return;
+  }
+
+  showToast(`Immediate power off: ${name}…`, "info");
+  try {
+    const r = await fetch(
+      `/api/hmcs/${hmcId}/managed-systems/${currentSystemId}/lpars/${encodeURIComponent(lparId)}/action`,
+      { method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ action:"shutdown" }) }
+    );
+    const d = await r.json();
+    if (d.ok) {
+      showToast(`✓ ${name} power off submitted`, "success");
+      loadLPARs();
+    } else {
+      showToast(`✗ ${d.error || "Power off failed"}`, "error");
+    }
+  } catch (e) {
+    showToast(`✗ Network error: ${e}`, "error");
+  }
+}
+
 function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+
 
 function copyToClipboard(text) {
   const el = document.createElement('textarea');
