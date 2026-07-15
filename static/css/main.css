@@ -276,6 +276,29 @@ code { font-family: "Menlo","Monaco","Courier New",monospace; font-size: 12px; }
 .badge-blue   { background: var(--blue-bg);   color: var(--blue-text); }
 .badge-grey   { background: #eaeef2;           color: var(--muted); }
 
+/* SAN Switch connection status indicators */
+.conn-ok {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600;
+  color: #1a8a45;
+  background: #d4f5e2; border-radius: 10px;
+  padding: 2px 8px;
+}
+.conn-fail {
+  display: inline-flex; align-items: center;
+  font-size: 13px; font-weight: 700;
+  color: var(--red); background: var(--red-bg);
+  border-radius: 10px; padding: 2px 8px;
+}
+.conn-checking {
+  display: inline-block;
+  font-size: 16px; color: var(--muted);
+  animation: conn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
+}
+
 /* ═══════ FORMS ═══════ */
 .form-row {
   display: flex;
@@ -307,6 +330,7 @@ code { font-family: "Menlo","Monaco","Courier New",monospace; font-size: 12px; }
   z-index: 200;
   display: flex; align-items: center; justify-content: center;
 }
+.hidden { display: none !important; }
 .modal-overlay.hidden { display: none; }
 
 .modal {

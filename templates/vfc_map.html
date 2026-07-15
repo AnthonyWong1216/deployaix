@@ -1,0 +1,886 @@
+{% extends "base.html" %}
+{% block title %}VFC Management{% endblock %}
+{% block page_title %}VFC Management — Virtual Fibre Channel{% endblock %}
+{% block content %}
+
+<!-- Context selectors (shared across all tabs) -->
+<div class="card" style="margin-bottom:14px">
+  <div class="card-title" style="margin-bottom:10px">HMC / Managed System Context</div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+    <div class="form-row" style="margin:0;min-width:200px">
+      <label style="font-size:12px;font-weight:500">HMC</label>
+      <select id="ctx-hmc" class="input" onchange="onCtxHmcChange()">
+        <option value="">— select HMC —</option>
+      </select>
+    </div>
+    <div class="form-row" style="margin:0;min-width:240px">
+      <label style="font-size:12px;font-weight:500">Managed System</label>
+      <select id="ctx-system" class="input" onchange="onCtxSystemChange()" disabled>
+        <option value="">— select managed system —</option>
+      </select>
+    </div>
+    <div id="ctx-status" style="font-size:12px;color:var(--muted);padding-bottom:2px"></div>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div style="display:flex;gap:0;margin-bottom:-1px;position:relative;z-index:1">
+  <button class="vfc-tab active" id="tab-btn-create-map"   onclick="showTab('create-map')">＋ Create Virtual Fibre Adapter</button>
+  <button class="vfc-tab"        id="tab-btn-delete-map"   onclick="showTab('delete-map')">✕ Delete Virtual Fibre Adapter</button>
+  <button class="vfc-tab"        id="tab-btn-map-vfc"      onclick="showTab('map-vfc')">🔗 Map VFC</button>
+  <button class="vfc-tab"        id="tab-btn-remove-vfc"   onclick="showTab('remove-vfc')">🗑 Remove VFC Mapping</button>
+</div>
+
+<!-- ═══════ TAB: Create Virtual Fibre Adapter ═══════ -->
+<div class="card vfc-panel" id="panel-create-map" style="border-radius:0 var(--radius) var(--radius) var(--radius)">
+  <div class="card-title">Create Virtual Fibre Adapter — 2 Steps (VIOS server + Client LPAR)</div>
+  <p class="muted" style="font-size:12px;margin-bottom:14px">
+    Runs both steps automatically:
+    <strong>Step 1</strong> adds the vfchost on the VIOS side,
+    <strong>Step 2</strong> adds the client vFC adapter on the LPAR side with WWPNs.
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="form-row">
+      <label>VIOS Name <span class="req">*</span></label>
+      <select id="cm-vios" class="input" disabled onchange="updateCmPreview()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>VIOS Slot <span class="req">*</span></label>
+      <input id="cm-vios-slot" class="input" type="number" min="1" placeholder="e.g. 12" oninput="updateCmPreview()">
+    </div>
+    <div class="form-row">
+      <label>Client LPAR <span class="req">*</span></label>
+      <select id="cm-client" class="input" disabled onchange="updateCmPreview()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Client Slot <span class="req">*</span></label>
+      <input id="cm-client-slot" class="input" type="number" min="1" placeholder="e.g. 4" oninput="updateCmPreview()">
+    </div>
+    <div class="form-row">
+      <label>WWPN 1 <span class="muted" style="font-size:10px;font-weight:400">(leave blank to auto-generate — colons stripped automatically)</span></label>
+      <input id="cm-wwpn1" class="input" placeholder="e.g. 100000B3FFAF0E73 or 10:00:00:B3:FF:AF:0E:73" style="font-family:monospace" oninput="normalizeWwpn(this); updateCmPreview()">
+    </div>
+    <div class="form-row">
+      <label>WWPN 2 <span class="muted" style="font-size:10px;font-weight:400">(leave blank to auto-generate — colons stripped automatically)</span></label>
+      <input id="cm-wwpn2" class="input" placeholder="e.g. 100000B3FFAF0E74 or 10:00:00:B3:FF:AF:0E:74" style="font-family:monospace" oninput="normalizeWwpn(this); updateCmPreview()">
+    </div>
+  </div>
+  <div style="margin:4px 0 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button class="btn btn-secondary btn-sm" onclick="genWwpns()" title="Generate random unique WWPNs">⚙ Generate WWPNs</button>
+    <span id="cm-wwpn-note" style="font-size:11px;color:var(--muted)">Leave blank — WWPNs will be auto-generated on submit</span>
+  </div>
+
+  <!-- LPAR state toggle -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--bg)">
+    <div style="font-size:12px;font-weight:600;margin-bottom:8px">LPAR State</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+        <input type="radio" name="cm-lpar-state" value="running" checked onchange="onLparStateChange()">
+        <span>🟢 Running</span>
+        <span class="muted" style="font-size:11px">(uses chhwres live)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+        <input type="radio" name="cm-lpar-state" value="stopped" onchange="onLparStateChange()">
+        <span>🔴 Stopped</span>
+        <span class="muted" style="font-size:11px">(updates profile via chsyscfg)</span>
+      </label>
+    </div>
+    <!-- Profile selector (shown only when stopped) -->
+    <div id="cm-profile-row" style="display:none;margin-top:10px">
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-row" style="margin:0;flex:1;min-width:220px">
+          <label style="font-size:12px;font-weight:500">LPAR Profile <span class="req">*</span></label>
+          <select id="cm-profile" class="input" onchange="updateCmPreview()">
+            <option value="">— select client LPAR first —</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="loadProfiles()" title="Reload profiles for selected client LPAR">↻ Load Profiles</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command preview -->
+  <div id="cm-preview-wrap" style="display:none;margin:8px 0">
+    <div style="font-size:11px;color:#6b7280;font-weight:600;margin-bottom:4px">Step 1 — VIOS server side:</div>
+    <pre id="cm-preview-1" class="cmd-preview" style="margin:0 0 8px"></pre>
+    <div style="font-size:11px;color:#6b7280;font-weight:600;margin-bottom:4px">Step 2 — Client LPAR side:</div>
+    <pre id="cm-preview-2" class="cmd-preview" style="margin:0"></pre>
+  </div>
+
+  <div id="cm-result" class="result-box hidden" style="max-height:300px;overflow-y:auto"></div>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="resetPanel('cm')">↺ Reset</button>
+    <button class="btn btn-primary" id="cm-submit" onclick="doCreateMap()" disabled>＋ Create Virtual Fibre Adapter</button>
+  </div>
+</div>
+
+<!-- ═══════ TAB: Delete Virtual Fibre Adapter ═══════ -->
+<div class="card vfc-panel hidden" id="panel-delete-map" style="border-radius:0 var(--radius) var(--radius) var(--radius)">
+  <div class="card-title">Delete Virtual Fibre Adapter (VIOS side)</div>
+  <p class="muted" style="font-size:12px;margin-bottom:14px">
+    Removes the vfchost adapter from the VIOS slot:
+    <code>chhwres -r virtualio -o r -p &lt;VIOS&gt; -s &lt;slot&gt;</code>
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="form-row">
+      <label>VIOS Name <span class="req">*</span></label>
+      <select id="dm-vios" class="input" disabled onchange="updateDmPreview()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>VIOS Slot <span class="req">*</span></label>
+      <input id="dm-vios-slot" class="input" type="number" min="1" placeholder="e.g. 12" oninput="updateDmPreview()">
+      <span class="muted" style="font-size:11px">Slot number of the vfchost adapter to remove</span>
+    </div>
+  </div>
+
+  <!-- Existing mappings quick-pick -->
+  <div id="dm-existing" style="margin-top:10px;display:none">
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--muted)">Existing server-side mappings (click to prefill):</div>
+    <div id="dm-existing-list"></div>
+  </div>
+
+  <div id="dm-preview" class="cmd-preview hidden"></div>
+  <div id="dm-result" class="result-box hidden" style="max-height:220px;overflow-y:auto"></div>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="resetPanel('dm')">↺ Reset</button>
+    <button class="btn btn-red" id="dm-submit" onclick="doDeleteMap()" disabled>✕ Delete Virtual Fibre Adapter</button>
+  </div>
+</div>
+
+<!-- ═══════ TAB: Map VFC ═══════ -->
+<div class="card vfc-panel hidden" id="panel-map-vfc" style="border-radius:0 var(--radius) var(--radius) var(--radius)">
+  <div class="card-title">Map VFC — Map vfchost to Physical FC Port</div>
+  <p class="muted" style="font-size:12px;margin-bottom:14px">
+    Maps a vfchost virtual adapter to a physical Fibre Channel port on the VIOS using <code>vfcmap</code>.
+    Select VIOS and Client LPAR to load available vfchost adapters, then select the physical FC port.
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="form-row">
+      <label>VIOS Name <span class="req">*</span></label>
+      <select id="mv-vios" class="input" disabled onchange="onMvViosChange()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Client LPAR <span class="req">*</span></label>
+      <select id="mv-client" class="input" disabled onchange="onMvClientChange()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>vfchost Adapter <span class="req">*</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="mv-vfchost" class="input" disabled onchange="updateMvPreview()" style="flex:1">
+          <option value="">— select VIOS &amp; Client LPAR first —</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="mv-vfchost-reload" onclick="loadMvVfchost()" disabled title="Reload vfchost list from VIOS">↻</button>
+      </div>
+      <div id="mv-vfchost-status" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
+    </div>
+    <div class="form-row">
+      <label>Physical FC Adapter (fcsX) <span class="req">*</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="mv-fcs" class="input" disabled onchange="updateMvPreview()" style="flex:1">
+          <option value="">— select VIOS first —</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="mv-fcs-reload" onclick="loadMvFcsAdapters()" disabled title="Reload physical FC adapters from VIOS">↻</button>
+      </div>
+      <div id="mv-fcs-status" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
+    </div>
+  </div>
+
+  <!-- Command preview -->
+  <div id="mv-preview-wrap" style="display:none;margin:10px 0 8px">
+    <div style="font-size:11px;color:#6b7280;font-weight:600;margin-bottom:4px">Commands to execute:</div>
+    <pre id="mv-preview" class="cmd-preview" style="margin:0"></pre>
+  </div>
+
+  <div id="mv-result" class="result-box hidden" style="max-height:300px;overflow-y:auto"></div>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="resetPanel('mv')">↺ Reset</button>
+    <button class="btn btn-primary" id="mv-submit" onclick="doMapVfc()" disabled>🔗 Map VFC</button>
+  </div>
+</div>
+
+<!-- ═══════ TAB: Remove VFC Mapping ═══════ -->
+<div class="card vfc-panel hidden" id="panel-remove-vfc" style="border-radius:0 var(--radius) var(--radius) var(--radius)">
+  <div class="card-title">Remove VFC Mapping — Unmap vfchost from Physical FC Port</div>
+  <p class="muted" style="font-size:12px;margin-bottom:14px">
+    Removes the mapping between a vfchost virtual adapter and its physical FC port on the VIOS.
+    Runs: <code>viosvrcmd -m &lt;system&gt; -p &lt;VIOS&gt; -c "vfcmap -vadapter &lt;vfchostX&gt; -remove"</code>
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="form-row">
+      <label>VIOS Name <span class="req">*</span></label>
+      <select id="rv-vios" class="input" disabled onchange="updateRvPreview()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Client LPAR <span class="req">*</span></label>
+      <select id="rv-client" class="input" disabled onchange="updateRvPreview()">
+        <option value="">— load system first —</option>
+      </select>
+    </div>
+  </div>
+  <p class="muted" style="font-size:11px;margin-top:8px">
+    The vfchostX will be auto-detected from <code>lsmap -all -npiv</code> by matching the client LPAR id.
+  </p>
+
+  <!-- Command preview -->
+  <div id="rv-preview-wrap" style="display:none;margin:10px 0 8px">
+    <div style="font-size:11px;color:#6b7280;font-weight:600;margin-bottom:4px">Commands to execute:</div>
+    <pre id="rv-preview" class="cmd-preview" style="margin:0"></pre>
+  </div>
+
+  <div id="rv-result" class="result-box hidden" style="max-height:300px;overflow-y:auto"></div>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="resetPanel('rv')">↺ Reset</button>
+    <button class="btn btn-red" id="rv-submit" onclick="doRemoveVfc()" disabled>🗑 Remove VFC Mapping</button>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<style>
+.vfc-tab {
+  padding: 8px 18px; font-size: 13px; font-weight: 500;
+  border: 1px solid var(--border); border-bottom: none;
+  background: var(--bg); color: var(--muted);
+  cursor: pointer; border-radius: var(--radius) var(--radius) 0 0;
+  margin-right: 3px; transition: background .12s;
+}
+.vfc-tab:hover  { background: var(--surface); color: var(--text); }
+.vfc-tab.active { background: var(--surface); color: var(--text); font-weight: 600; }
+
+.vfc-panel { margin-top: 0; }
+
+.cmd-preview {
+  margin: 10px 0 8px;
+  background: #1e1e1e; border-radius: 6px;
+  padding: 8px 12px; font-size: 12px; font-family: monospace;
+  color: #9cdcfe; white-space: pre-wrap; word-break: break-all;
+}
+.cmd-preview::before {
+  content: "Command preview:";
+  display: block; font-size: 10px; font-weight: 600;
+  color: #6b7280; margin-bottom: 4px; font-family: sans-serif;
+}
+</style>
+
+<script>
+let _hmcId    = "";
+let _systemId = "";
+let _allLpars = [];
+let _viosLpars = [];
+let _fcAdapters = [];
+
+function esc(s)  { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function escH(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// ── Tab switching ─────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll(".vfc-panel").forEach(p => p.classList.add("hidden"));
+  document.querySelectorAll(".vfc-tab").forEach(b => b.classList.remove("active"));
+  document.getElementById("panel-" + name).classList.remove("hidden");
+  document.getElementById("tab-btn-" + name).classList.add("active");
+  if (name === "delete-map") loadDmExisting();
+}
+
+// ── Init ──────────────────────────────────────────────────
+async function initPage() {
+  const hmcs = await fetch("/api/hmcs").then(r => r.json());
+  const sel  = document.getElementById("ctx-hmc");
+  sel.innerHTML = '<option value="">— select HMC —</option>' +
+    hmcs.map(h => `<option value="${esc(h.id)}">${esc(h.name)} (${esc(h.host)})</option>`).join("");
+}
+
+// ── Context: HMC change ───────────────────────────────────
+async function onCtxHmcChange() {
+  _hmcId    = document.getElementById("ctx-hmc").value;
+  _systemId = "";
+  _allLpars = []; _viosLpars = []; _fcAdapters = [];
+  const sysSel = document.getElementById("ctx-system");
+  if (!_hmcId) { sysSel.disabled = true; sysSel.innerHTML = '<option value="">— select managed system —</option>'; return; }
+  sysSel.innerHTML = '<option value="">Loading…</option>';
+  const d = await fetch(`/api/hmcs/${_hmcId}/managed-systems`).then(r => r.json());
+  if (!d.ok || !d.data) { sysSel.innerHTML = `<option value="">✗ ${esc(d.error||"Failed")}</option>`; return; }
+  sysSel.innerHTML = '<option value="">— select managed system —</option>' +
+    d.data.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("");
+  sysSel.disabled = false;
+}
+
+// ── Context: System change ────────────────────────────────
+async function onCtxSystemChange() {
+  _systemId = document.getElementById("ctx-system").value;
+  _allLpars = []; _viosLpars = []; _fcAdapters = [];
+  setStatus("Loading LPARs…");
+  if (!_systemId) { setStatus(""); return; }
+
+  const d = await fetch(`/api/hmcs/${_hmcId}/managed-systems/${encodeURIComponent(_systemId)}/lpars-list`)
+    .then(r => r.json());
+  if (!d.ok) { setStatus("✗ " + (d.error || "Failed to load LPARs")); return; }
+
+  _allLpars  = d.lpars || [];
+  _viosLpars = _allLpars.filter(l => (l.env||"").toLowerCase().includes("vios"));
+  setStatus(`✔ ${_allLpars.length} LPARs loaded (${_viosLpars.length} VIOS)`);
+
+  const viosOpts = _viosLpars.length
+    ? _viosLpars.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join("")
+    : _allLpars.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join("");
+  const allOpts  = _allLpars.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join("");
+  const ph = `<option value="">— select —</option>`;
+
+  // Populate VIOS selects
+  ["cm-vios","dm-vios","mv-vios","rv-vios"].forEach(id => {
+    const el = document.getElementById(id);
+    el.innerHTML = ph + viosOpts; el.disabled = false;
+  });
+  // Populate all-LPAR selects
+  ["cm-client","mv-client","rv-client"].forEach(id => {
+    const el = document.getElementById(id);
+    el.innerHTML = ph + allOpts; el.disabled = false;
+  });
+  ["cm-submit","dm-submit","mv-submit","rv-submit"].forEach(id => {
+    document.getElementById(id).disabled = false;
+  });
+
+  loadFcAdapters();
+}
+
+async function loadFcAdapters() {
+  const d = await fetch(`/api/hmcs/${_hmcId}/managed-systems/${encodeURIComponent(_systemId)}/vfc-topology`)
+    .then(r => r.json()).catch(() => null);
+  _fcAdapters = (d && d.ok) ? (d.fc_adapters || []) : [];
+  loadDmExisting();
+}
+
+function loadDmExisting() {
+  const wrap = document.getElementById("dm-existing");
+  const list = document.getElementById("dm-existing-list");
+  const rows = _fcAdapters.filter(r => r.adapter_type === "server");
+  if (!rows.length) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  list.innerHTML = rows.map(r => `
+    <span onclick="prefillDm('${escH(r.lpar_name)}','${escH(r.slot_num)}')"
+          style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;
+                 background:var(--bg);border:1px solid var(--border);
+                 border-radius:4px;padding:3px 8px;font-size:12px;margin:2px;
+                 transition:background .12s"
+          onmouseover="this.style.background='var(--blue-bg)'"
+          onmouseout="this.style.background='var(--bg)'">
+      <strong>${esc(r.lpar_name)}</strong>
+      <span class="muted">slot ${esc(r.slot_num)}</span>
+      → ${esc(r.remote_lpar_name||"?")} slot ${esc(r.remote_slot_num||"?")}
+    </span>`).join("");
+}
+
+function prefillDm(vios, slot) {
+  const sel = document.getElementById("dm-vios");
+  for (const o of sel.options) { if (o.value === vios) { sel.value = vios; break; } }
+  document.getElementById("dm-vios-slot").value = slot;
+  updateDmPreview();
+}
+
+function setStatus(msg) { document.getElementById("ctx-status").textContent = msg; }
+
+// ── Helpers ───────────────────────────────────────────────
+function v(id) { return (document.getElementById(id).value || "").trim(); }
+
+function _getLparId(name) {
+  const found = _allLpars.find(l => l.name === name);
+  return found ? (found.lpar_id || "") : "";
+}
+
+function _renderStep(s) {
+  const ok  = s.ok;
+  const out = (s.output || s.error || "").trim();
+  const note = s.note ? `<div style="font-size:11px;color:var(--muted);padding:2px 8px">${escH(s.note)}</div>` : "";
+  return `<div style="margin-bottom:8px">
+    <div style="font-size:11px;font-weight:600;color:${ok?"var(--green)":"var(--red)"};margin-bottom:2px">
+      Step ${s.step} — ${escH(s.label)} ${ok?"✔":"✘ failed"}
+    </div>
+    <pre style="background:#1e1e1e;color:#9cdcfe;font-size:11px;padding:6px 8px;
+         border-radius:4px;overflow-x:auto;white-space:pre-wrap;margin:0">$ ${escH(s.command)}</pre>
+    ${note}
+    ${out ? `<pre style="background:#111;color:${ok?"#a8ff78":"#ff6b6b"};font-size:11px;
+         padding:4px 8px;border-radius:0 0 4px 4px;overflow-x:auto;
+         white-space:pre-wrap;margin:0;border-top:1px solid #333">${escH(out)}</pre>` : ""}
+  </div>`;
+}
+
+// ── WWPN helpers ──────────────────────────────────────────
+function normalizeWwpn(input) {
+  const hex = input.value.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+  input.value = hex;
+  try { input.setSelectionRange(hex.length, hex.length); } catch(e) {}
+}
+function genRandWwpn() {
+  let w = "1000";
+  for (let i = 0; i < 6; i++) w += Math.floor(Math.random()*256).toString(16).padStart(2,"0");
+  return w;
+}
+function genWwpns() {
+  let w1 = genRandWwpn(), w2 = genRandWwpn();
+  while (w2 === w1) w2 = genRandWwpn();
+  document.getElementById("cm-wwpn1").value = w1;
+  document.getElementById("cm-wwpn2").value = w2;
+  document.getElementById("cm-wwpn-note").textContent = "✔ WWPNs generated — you can edit them before submitting";
+  updateCmPreview();
+}
+
+// ── Previews ──────────────────────────────────────────────
+function updateCmPreview() {
+  const sys = _systemId, vios = v("cm-vios"), vs = v("cm-vios-slot"),
+        cl  = v("cm-client"), cs = v("cm-client-slot");
+  const w1  = v("cm-wwpn1") || "<auto>", w2 = v("cm-wwpn2") || "<auto>";
+  const wrap = document.getElementById("cm-preview-wrap");
+  if (sys && vios && vs && cl && cs) {
+    document.getElementById("cm-preview-1").textContent =
+      `chhwres -r virtualio -m "${sys}" -o a \\\n  -p "${vios}" --rsubtype fc -s ${vs} \\\n  -a "adapter_type=server,remote_lpar_name=${cl},remote_slot_num=${cs}"`;
+    document.getElementById("cm-preview-2").textContent =
+      `chhwres -r virtualio -m "${sys}" -o a \\\n  -p "${cl}" --rsubtype fc -s ${cs} \\\n  -a "adapter_type=client,remote_lpar_name=${vios},remote_slot_num=${vs},wwpns=${w1},${w2}"`;
+    wrap.style.display = "";
+  } else {
+    wrap.style.display = "none";
+  }
+}
+
+function updateDmPreview() {
+  const sys = _systemId, vios = v("dm-vios"), vs = v("dm-vios-slot");
+  const el = document.getElementById("dm-preview");
+  if (sys && vios && vs) {
+    el.textContent = `chhwres -r virtualio -m "${sys}" -o r \\\n  -p "${vios}" --rsubtype fc -s ${vs}`;
+    el.classList.remove("hidden");
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
+function updateMvPreview() {
+  const sys    = _systemId, vios = v("mv-vios"), cl = v("mv-client");
+  const fcs    = v("mv-fcs");
+  const vfchost = v("mv-vfchost");
+  const wrap   = document.getElementById("mv-preview-wrap");
+  const pre    = document.getElementById("mv-preview");
+  if (sys && vios && cl) {
+    const fcsLabel    = fcs     || "<select fcsX>";
+    const vfcLabel    = vfchost || "<select vfchost>";
+    const clId        = _getLparId(cl) || "<client_lpar_id>";
+    pre.textContent =
+      `# Step 1 — get lpar_id\n` +
+      `lssyscfg -m "${sys}" -r lpar --filter "lpar_names=${cl}" -F lpar_id\n` +
+      `  → lpar_id: ${clId}\n\n` +
+      `# Step 2 — find vfchost for this client\n` +
+      `viosvrcmd -m ${sys} -p "${vios}" -c "lsmap -all -npiv -cpid ${clId} -fmt ,"\n` +
+      `  → vfchost: ${vfcLabel}\n\n` +
+      `# Step 3 — map vfchost to physical FC port\n` +
+      `viosvrcmd -m ${sys} -p "${vios}" -c "vfcmap -vadapter ${vfcLabel} -fcp ${fcsLabel}"`;
+    wrap.style.display = "";
+  } else {
+    wrap.style.display = "none";
+  }
+}
+
+function updateRvPreview() {
+  const sys = _systemId, vios = v("rv-vios"), cl = v("rv-client");
+  const wrap = document.getElementById("rv-preview-wrap");
+  const pre  = document.getElementById("rv-preview");
+  if (sys && vios && cl) {
+    const clId = _getLparId(cl) || "<client_lpar_id>";
+    pre.textContent =
+      `viosvrcmd -m ${sys} -p "${vios}" -c "lsmap -all -npiv -fmt ,"\n` +
+      `  → find vfchostX where clntid == ${clId}\n` +
+      `viosvrcmd -m ${sys} -p "${vios}" -c "vfcmap -vadapter <vfchostX> -remove"`;
+    wrap.style.display = "";
+  } else {
+    wrap.style.display = "none";
+  }
+}
+
+// ── Load vfchost list for Map VFC tab ────────────────────
+async function loadMvVfchost() {
+  const vios   = v("mv-vios");
+  const client = v("mv-client");
+  const vfcSel    = document.getElementById("mv-vfchost");
+  const vfcStatus = document.getElementById("mv-vfchost-status");
+  const vfcBtn    = document.getElementById("mv-vfchost-reload");
+
+  if (!vios || !client || !_systemId || !_hmcId) {
+    vfcSel.innerHTML = '<option value="">— select VIOS &amp; Client LPAR first —</option>';
+    vfcSel.disabled = true; vfcBtn.disabled = true;
+    vfcStatus.textContent = "";
+    updateMvPreview();
+    return;
+  }
+
+  vfcSel.innerHTML = '<option value="">Loading…</option>';
+  vfcSel.disabled = true;
+  vfcStatus.textContent = "⏳ Loading vfchost list…";
+
+  const url = `/api/hmcs/${_hmcId}/vfc-map/vfchost-list?` +
+    `managed_system=${encodeURIComponent(_systemId)}` +
+    `&vios_name=${encodeURIComponent(vios)}` +
+    `&client_lpar_name=${encodeURIComponent(client)}`;
+  const d = await fetch(url).then(r => r.json()).catch(() => null);
+
+  if (!d || !d.ok) {
+    vfcSel.innerHTML = `<option value="">✗ ${esc((d && d.error) || "Failed")}</option>`;
+    vfcStatus.textContent = "✗ " + ((d && d.error) || "Failed to load");
+    vfcBtn.disabled = false;
+    return;
+  }
+  if (!d.vfchosts || !d.vfchosts.length) {
+    vfcSel.innerHTML = '<option value="">— no vfchost found for this client —</option>';
+    vfcStatus.textContent = "No vfchostX found for this client LPAR.";
+    vfcBtn.disabled = false;
+    return;
+  }
+  vfcSel.innerHTML = '<option value="">— select vfchost —</option>' +
+    d.vfchosts.map(h => `<option value="${esc(h)}">${esc(h)}</option>`).join("");
+  vfcSel.disabled = false; vfcBtn.disabled = false;
+  vfcStatus.textContent = `✔ ${d.vfchosts.length} vfchost(s) found  (lpar_id: ${d.lpar_id})`;
+  updateMvPreview();
+}
+
+function onMvClientChange() {
+  loadMvVfchost();
+  updateMvPreview();
+}
+
+// ── Load fcs adapters for Map VFC tab ─────────────────────
+async function loadMvFcsAdapters() {
+  const vios = v("mv-vios");
+  const fcsSel    = document.getElementById("mv-fcs");
+  const fcsStatus = document.getElementById("mv-fcs-status");
+  const fcsBtn    = document.getElementById("mv-fcs-reload");
+
+  if (!vios || !_systemId || !_hmcId) {
+    fcsSel.innerHTML = '<option value="">— select VIOS first —</option>';
+    fcsSel.disabled = true; fcsBtn.disabled = true;
+    fcsStatus.textContent = "";
+    return;
+  }
+  fcsSel.innerHTML = '<option value="">Loading…</option>';
+  fcsSel.disabled = true;
+  fcsStatus.textContent = "⏳ Loading…";
+
+  const url = `/api/hmcs/${_hmcId}/vfc-map/fcs-adapters?` +
+    `managed_system=${encodeURIComponent(_systemId)}&vios_name=${encodeURIComponent(vios)}`;
+  const d = await fetch(url).then(r => r.json()).catch(() => null);
+
+  if (!d || !d.ok) {
+    fcsSel.innerHTML = `<option value="">✗ ${esc((d && d.error) || "Failed")}</option>`;
+    fcsStatus.textContent = "✗ " + ((d && d.error) || "Failed");
+    fcsBtn.disabled = false;
+    return;
+  }
+  if (!d.adapters || !d.adapters.length) {
+    fcsSel.innerHTML = '<option value="">— no fcsX adapters found —</option>';
+    fcsStatus.textContent = "No fcsX adapters found.";
+    fcsBtn.disabled = false;
+    return;
+  }
+  fcsSel.innerHTML = '<option value="">— select physical adapter —</option>' +
+    d.adapters.map(a =>
+      `<option value="${esc(a.name)}">${esc(a.name)}${a.description ? " — " + esc(a.description) : ""}</option>`
+    ).join("");
+  fcsSel.disabled = false; fcsBtn.disabled = false;
+  fcsStatus.textContent = `✔ ${d.adapters.length} adapter(s) found`;
+  updateMvPreview();
+}
+
+function onMvViosChange() {
+  loadMvFcsAdapters();
+  updateMvPreview();
+}
+
+// ── Actions ───────────────────────────────────────────────
+
+// Create Virtual Fibre Adapter (Steps 1 & 2 only)
+async function doCreateMap() {
+  if (!_hmcId) { showR("cm", false, "Select an HMC first."); return; }
+  const payload = {
+    managed_system: _systemId,
+    vios_name:      v("cm-vios"),
+    vios_slot:      v("cm-vios-slot"),
+    client_lpar:    v("cm-client"),
+    client_slot:    v("cm-client-slot"),
+    wwpn1:          v("cm-wwpn1"),
+    wwpn2:          v("cm-wwpn2"),
+  };
+  const btn = document.getElementById("cm-submit");
+  btn.disabled = true; btn.textContent = "⏳ Executing…";
+
+  const r = await fetch(`/api/hmcs/${_hmcId}/vfc-map`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(res => res.json());
+
+  btn.disabled = false; btn.textContent = "＋ Create Virtual Fibre Adapter";
+
+  const ok  = r.ok;
+  const msg = ok ? (r.message || "Done.") : (r.error || "Failed");
+  const el  = document.getElementById("cm-result");
+  el.className = "result-box " + (ok ? "success" : "error");
+
+  let html = `<div style="font-weight:600;margin-bottom:8px">${ok?"✔":"✗"} ${escH(msg)}</div>`;
+  if (r.wwpn1) {
+    html += `<div style="font-size:12px;margin-bottom:8px;padding:6px 10px;
+             background:${ok?"var(--green-bg)":"#1a1a1a"};border-radius:4px">
+      ${r.generated_wwpns ? "🔑 Auto-generated WWPNs:" : "WWPNs used:"}
+      <br><code style="font-size:11px">${escH(r.wwpn1)}</code>
+      <br><code style="font-size:11px">${escH(r.wwpn2)}</code>
+    </div>`;
+  }
+  for (const s of (r.steps || [])) { html += _renderStep(s); }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+  showToast((ok ? "✔ " : "✗ ") + msg, ok ? "success" : "error");
+}
+
+// Delete Virtual Fibre Adapter
+async function doDeleteMap() {
+  if (!confirm(`Delete virtual fibre adapter on VIOS "${v("dm-vios")}" slot ${v("dm-vios-slot")}?`)) return;
+  const payload = { managed_system: _systemId, vios_name: v("dm-vios"), vios_slot: v("dm-vios-slot") };
+  await execAction("dm", `/api/hmcs/${_hmcId}/vfc-map/delete`, payload, "dm-submit", "✕ Delete Virtual Fibre Adapter");
+  if (_systemId) loadFcAdapters();
+}
+
+// Map VFC — vfcmap operation
+async function doMapVfc() {
+  if (!_hmcId) { showR("mv", false, "Select an HMC first."); return; }
+  const vfchost = v("mv-vfchost");
+  if (!vfchost) {
+    showR("mv", false, "Select a vfchost adapter from the dropdown. Use ↻ to load the list after choosing VIOS and Client LPAR.");
+    return;
+  }
+  const selectedFcs = v("mv-fcs");
+  if (!selectedFcs) {
+    showR("mv", false, "Select a physical FC adapter (fcsX) from the dropdown. Use ↻ to load the list after choosing VIOS.");
+    return;
+  }
+  // Build the vfcmap command directly using user's selections
+  const payload = {
+    managed_system:   _systemId,
+    vios_name:        v("mv-vios"),
+    vfchost_name:     vfchost,
+    physical_adapter: selectedFcs,
+  };
+  const btn = document.getElementById("mv-submit");
+  btn.disabled = true; btn.textContent = "⏳ Executing…";
+
+  const r = await fetch(`/api/hmcs/${_hmcId}/vfc-map/vfcmap`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(res => res.json());
+
+  btn.disabled = false; btn.textContent = "🔗 Map VFC";
+
+  const ok  = r.ok;
+  const msg = ok ? (r.message || "Done.") : (r.error || "Failed");
+  const el  = document.getElementById("mv-result");
+  el.className = "result-box " + (ok ? "success" : "error");
+
+  let html = `<div style="font-weight:600;margin-bottom:8px">${ok?"✔":"✗"} ${escH(msg)}</div>`;
+  for (const s of (r.steps || [])) { html += _renderStep(s); }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+  showToast((ok ? "✔ " : "✗ ") + msg, ok ? "success" : "error");
+}
+
+// Remove VFC Mapping — vfcmap -remove
+async function doRemoveVfc() {
+  if (!_hmcId) { showR("rv", false, "Select an HMC first."); return; }
+  const clientName = v("rv-client");
+  const clientLparId = _getLparId(clientName);
+  if (!clientLparId) {
+    showR("rv", false, `Cannot find numeric lpar_id for "${clientName}". Please reload the system.`);
+    return;
+  }
+  if (!confirm(`Remove VFC mapping for client LPAR "${clientName}" on VIOS "${v("rv-vios")}"?`)) return;
+
+  const payload = {
+    managed_system: _systemId,
+    vios_name:      v("rv-vios"),
+    client_lpar_id: clientLparId,
+  };
+  const btn = document.getElementById("rv-submit");
+  btn.disabled = true; btn.textContent = "⏳ Executing…";
+
+  const r = await fetch(`/api/hmcs/${_hmcId}/vfc-map/vfcmap-remove`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(res => res.json());
+
+  btn.disabled = false; btn.textContent = "🗑 Remove VFC Mapping";
+
+  const ok  = r.ok;
+  const msg = ok ? (r.message || "Done.") : (r.error || "Failed");
+  const el  = document.getElementById("rv-result");
+  el.className = "result-box " + (ok ? "success" : "error");
+
+  let html = `<div style="font-weight:600;margin-bottom:8px">${ok?"✔":"✗"} ${escH(msg)}</div>`;
+  for (const s of (r.steps || [])) { html += _renderStep(s); }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+  showToast((ok ? "✔ " : "✗ ") + msg, ok ? "success" : "error");
+}
+
+// Generic action helper
+async function execAction(prefix, url, payload, btnId, btnLabel) {
+  const btn = document.getElementById(btnId);
+  btn.disabled = true; btn.textContent = "⏳ Executing…";
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  btn.disabled = false; btn.textContent = btnLabel;
+  const ok  = r.ok;
+  const msg = ok ? (r.message || "Done.") : (r.error || "Failed");
+  showR(prefix, ok, msg, r.command);
+  showToast((ok ? "✔ " : "✗ ") + msg, ok ? "success" : "error");
+}
+
+function showR(prefix, ok, msg, cmd) {
+  const el = document.getElementById(prefix + "-result");
+  let html = `<div style="font-weight:600">${ok?"✔":"✗"} ${escH(msg)}</div>`;
+  if (cmd) html += `<pre style="background:#1e1e1e;color:#9cdcfe;font-size:11px;padding:5px 8px;
+    border-radius:4px;overflow-x:auto;white-space:pre-wrap;margin-top:5px">$ ${escH(cmd)}</pre>`;
+  el.className = "result-box " + (ok ? "success" : "error");
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+}
+
+function resetPanel(prefix) {
+  ["vios","client","lpar"].forEach(k => {
+    const el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = "";
+  });
+  ["vios-slot","client-slot","slot","wwpn1","wwpn2"].forEach(k => {
+    const el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = "";
+  });
+  const res = document.getElementById(prefix + "-result");
+  if (res) res.className = "result-box hidden";
+  const prev = document.getElementById(prefix + "-preview");
+  if (prev) prev.classList.add("hidden");
+  const wrap = document.getElementById(prefix + "-preview-wrap");
+  if (wrap) wrap.style.display = "none";
+  const note = document.getElementById(prefix + "-wwpn-note");
+  if (note) note.textContent = "Leave blank — WWPNs will be auto-generated on submit";
+  // Reset fcs dropdown if present
+  const fcsSel = document.getElementById(prefix + "-fcs");
+  if (fcsSel) { fcsSel.innerHTML = '<option value="">— select VIOS first —</option>'; fcsSel.disabled = true; }
+  const fcsStatus = document.getElementById(prefix + "-fcs-status");
+  if (fcsStatus) fcsStatus.textContent = "";
+  const fcsBtn = document.getElementById(prefix + "-fcs-reload");
+  if (fcsBtn) fcsBtn.disabled = true;
+}
+
+// ── LPAR state toggle (Create tab) ───────────────────────
+function onLparStateChange() {
+  const stopped = document.querySelector('input[name="cm-lpar-state"]:checked').value === "stopped";
+  document.getElementById("cm-profile-row").style.display = stopped ? "" : "none";
+  document.getElementById("cm-submit").textContent =
+    stopped ? "＋ Create Virtual Fibre Adapter (Profile)" : "＋ Create Virtual Fibre Adapter";
+  updateCmPreview();
+}
+
+// ── Load LPAR profiles ────────────────────────────────────
+async function loadProfiles() {
+  const client = v("cm-client");
+  const profSel = document.getElementById("cm-profile");
+  if (!client || !_systemId || !_hmcId) {
+    profSel.innerHTML = '<option value="">— select client LPAR first —</option>';
+    return;
+  }
+  profSel.innerHTML = '<option value="">Loading…</option>';
+  const d = await fetch(`/api/hmcs/${_hmcId}/managed-systems/${encodeURIComponent(_systemId)}/lpars/${encodeURIComponent(client)}/profiles`)
+    .then(r => r.json()).catch(() => null);
+  if (!d || !d.ok || !d.data || !d.data.length) {
+    profSel.innerHTML = `<option value="">✗ ${esc((d && d.error) || "No profiles found")}</option>`;
+    return;
+  }
+  profSel.innerHTML = '<option value="">— select profile —</option>' +
+    d.data.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+}
+
+// Override doCreateMap to handle profile (stopped LPAR) mode
+const _origDoCreateMap = doCreateMap;
+doCreateMap = async function() {
+  const stopped = document.querySelector('input[name="cm-lpar-state"]:checked').value === "stopped";
+  if (!stopped) { await _origDoCreateMap(); return; }
+
+  if (!_hmcId) { showR("cm", false, "Select an HMC first."); return; }
+  const profile = v("cm-profile");
+  if (!profile) { showR("cm", false, "Select an LPAR profile for the stopped LPAR."); return; }
+
+  const payload = {
+    managed_system: _systemId,
+    vios_name:      v("cm-vios"),
+    vios_slot:      v("cm-vios-slot"),
+    client_lpar:    v("cm-client"),
+    profile_name:   profile,
+    client_slot:    v("cm-client-slot"),
+    wwpn1:          v("cm-wwpn1"),
+    wwpn2:          v("cm-wwpn2"),
+  };
+  const btn = document.getElementById("cm-submit");
+  btn.disabled = true; btn.textContent = "⏳ Executing…";
+
+  const r = await fetch(`/api/hmcs/${_hmcId}/vfc-map/profile`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(res => res.json());
+
+  btn.disabled = false; btn.textContent = "＋ Create Virtual Fibre Adapter (Profile)";
+
+  const ok  = r.ok;
+  const msg = ok ? (r.message || "Done.") : (r.error || "Failed");
+  const el  = document.getElementById("cm-result");
+  el.className = "result-box " + (ok ? "success" : "error");
+
+  let html = `<div style="font-weight:600;margin-bottom:8px">${ok?"✔":"✗"} ${escH(msg)}</div>`;
+  if (r.wwpn1) {
+    html += `<div style="font-size:12px;margin-bottom:8px;padding:6px 10px;
+             background:${ok?"var(--green-bg)":"#1a1a1a"};border-radius:4px">
+      ${r.generated_wwpns ? "🔑 Auto-generated WWPNs:" : "WWPNs used:"}
+      <br><code style="font-size:11px">${escH(r.wwpn1)}</code>
+      <br><code style="font-size:11px">${escH(r.wwpn2)}</code>
+    </div>`;
+  }
+  for (const s of (r.steps || [])) { html += _renderStep(s); }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+  showToast((ok ? "✔ " : "✗ ") + msg, ok ? "success" : "error");
+};
+
+// ── Event wiring ──────────────────────────────────────────
+document.getElementById("cm-vios").addEventListener("change", updateCmPreview);
+document.getElementById("cm-client").addEventListener("change", () => {
+  updateCmPreview();
+  if (document.querySelector('input[name="cm-lpar-state"]:checked').value === "stopped") loadProfiles();
+});
+["cm-wwpn1","cm-wwpn2"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) { el.addEventListener("change", updateCmPreview); el.addEventListener("input", updateCmPreview); }
+});
+document.getElementById("dm-vios").addEventListener("change", updateDmPreview);
+document.getElementById("mv-vios").addEventListener("change", onMvViosChange);
+document.getElementById("mv-client").addEventListener("change", onMvClientChange);
+document.getElementById("mv-vfchost").addEventListener("change", updateMvPreview);
+document.getElementById("mv-fcs").addEventListener("change", updateMvPreview);
+document.getElementById("rv-vios").addEventListener("change", updateRvPreview);
+document.getElementById("rv-client").addEventListener("change", updateRvPreview);
+
+document.addEventListener("DOMContentLoaded", initPage);
+</script>
+{% endblock %}

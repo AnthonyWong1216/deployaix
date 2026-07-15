@@ -1,27 +1,149 @@
 {% extends "base.html" %}
 {% block title %}Zoning{% endblock %}
-{% block page_title %}SAN Zoning (Read-only){% endblock %}
+{% block page_title %}SAN Zoning{% endblock %}
 {% block content %}
 
-<div class="toolbar">
-  <div class="toolbar-group">
-    <label class="label-inline">Switch:</label>
-    <select id="switch-selector" onchange="loadZoning()">
-      <option value="">— select switch —</option>
-    </select>
+<div class="toolbar toolbar-stacked">
+  <div class="toolbar-row">
+    <div class="toolbar-group">
+      <label class="label-inline">Switch:</label>
+      <select id="switch-selector" class="input" style="min-width:280px" onchange="loadZoning()">
+        <option value="">— select switch —</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="loadZoning()">↻ Refresh</button>
+    <button class="btn btn-secondary" onclick="loadZoning(true)" title="Show raw CLI output">🐛 Debug</button>
+    <span id="active-badge" class="badge badge-green" style="display:none;font-size:13px;padding:4px 12px"></span>
   </div>
-  <button class="btn btn-primary" onclick="loadZoning()">↻ Refresh</button>
-  <button class="btn btn-secondary" onclick="loadZoning(true)" title="Show raw CLI output">Debug</button>
-  <span id="active-badge" class="badge badge-green" style="display:none"></span>
-  <div class="toolbar-group" style="margin-left:auto">
-    <label class="label-inline">Search:</label>
-    <input id="zoning-search" class="input" style="width:260px"
-           placeholder="alias, WWPN or zone name…"
-           oninput="applySearch()">
-    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">Clear</button>
+  <div class="toolbar-row" style="margin-top:8px">
+    <button class="btn btn-green btn-sm" onclick="openModal('modal-create-alias')" id="btn-create-alias" disabled>+ Create Alias</button>
+    <button class="btn btn-green btn-sm" onclick="openModal('modal-create-zone')" id="btn-create-zone" disabled>+ Create Zone</button>
+    <button class="btn btn-secondary btn-sm" onclick="openModal('modal-add-to-zoneset')" id="btn-add-zoneset" disabled>＋ Add Zone to Zoneset</button>
+    <button class="btn btn-orange btn-sm" onclick="openModal('modal-activate-zoneset')" id="btn-activate" disabled>⚡ Activate Zoneset</button>
+    <div class="toolbar-group" style="margin-left:auto">
+      <label class="label-inline">Search:</label>
+      <input id="zoning-search" class="input" style="width:280px"
+             placeholder="alias name, WWPN, zone name…"
+             oninput="applySearch()">
+      <button class="btn btn-secondary btn-sm" onclick="clearSearch()">✕ Clear</button>
+    </div>
   </div>
 </div>
 
+<!-- ═══ CREATE ALIAS MODAL ═══ -->
+<div class="modal-overlay hidden" id="modal-create-alias">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Create Alias</span>
+      <button class="modal-close" onclick="closeModal('modal-create-alias')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Alias Name <span class="req">*</span></label>
+        <input id="alias-name" class="input" placeholder="e.g. HOST_HBA1" style="width:100%" oninput="updateAliasPreview()">
+      </div>
+      <div class="form-row">
+        <label>WWPNs (one per line) <span class="req">*</span></label>
+        <textarea id="alias-members" class="input" rows="4" style="width:100%;font-family:monospace;font-size:12px"
+                  placeholder="10:00:00:00:c9:xx:xx:xx&#10;10:00:00:00:c9:xx:xx:xy"
+                  oninput="updateAliasPreview()"></textarea>
+        <span class="muted" style="font-size:11px">Enter one WWPN per line (colons optional)</span>
+      </div>
+      <div id="alias-preview" style="display:none;margin-top:6px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Command preview:</div>
+        <pre id="alias-preview-cmd" style="background:#1e1e1e;color:#9cdcfe;font-size:11px;padding:6px 8px;
+             border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+      </div>
+      <div id="alias-result" class="result-box hidden" style="max-height:260px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="btn-alias-cancel" onclick="closeModal('modal-create-alias')">Cancel</button>
+      <button class="btn btn-primary" id="btn-alias-save" onclick="saveAlias()">Create Alias</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CREATE ZONE MODAL ═══ -->
+<div class="modal-overlay hidden" id="modal-create-zone">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Create Zone</span>
+      <button class="modal-close" onclick="closeModal('modal-create-zone')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Zone Name <span class="req">*</span></label>
+        <input id="zone-name" class="input" placeholder="e.g. HOST1_ARRAY1" style="width:100%">
+      </div>
+      <div class="form-row">
+        <label>Members — alias names or WWPNs (one per line) <span class="req">*</span></label>
+        <textarea id="zone-members" class="input" rows="5" style="width:100%;font-family:monospace;font-size:12px"
+                  placeholder="HOST_HBA1&#10;ARRAY_PORT1"></textarea>
+        <span class="muted" style="font-size:11px">Use alias names (recommended) or raw WWPNs</span>
+      </div>
+      <div id="zone-result" class="result-box hidden" style="max-height:260px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="btn-zone-cancel" onclick="closeModal('modal-create-zone')">Cancel</button>
+      <button class="btn btn-primary" id="btn-zone-save" onclick="saveZone()">Create Zone</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ADD ZONE TO ZONESET MODAL ═══ -->
+<div class="modal-overlay hidden" id="modal-add-to-zoneset">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Add Zone(s) to Zoneset</span>
+      <button class="modal-close" onclick="closeModal('modal-add-to-zoneset')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Zoneset / Config Name <span class="req">*</span></label>
+        <input id="zoneset-target" class="input" placeholder="e.g. PROD_CFG" style="width:100%" list="zoneset-datalist">
+        <datalist id="zoneset-datalist"></datalist>
+        <span class="muted" style="font-size:11px">Type an existing name or enter a new one</span>
+      </div>
+      <div class="form-row">
+        <label>Zone(s) to add (one per line) <span class="req">*</span></label>
+        <textarea id="zoneset-zones" class="input" rows="5" style="width:100%;font-family:monospace;font-size:12px"
+                  placeholder="HOST1_ARRAY1&#10;HOST2_ARRAY1"></textarea>
+      </div>
+      <div id="zoneset-result" class="result-box hidden" style="max-height:260px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="btn-zoneset-cancel" onclick="closeModal('modal-add-to-zoneset')">Cancel</button>
+      <button class="btn btn-primary" id="btn-zoneset-save" onclick="saveZonesetAdd()">Add to Zoneset</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ACTIVATE ZONESET MODAL ═══ -->
+<div class="modal-overlay hidden" id="modal-activate-zoneset">
+  <div class="modal">
+    <div class="modal-header">
+      <span>⚡ Activate Zoneset</span>
+      <button class="modal-close" onclick="closeModal('modal-activate-zoneset')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="result-box info" style="margin-bottom:12px">
+        ⚠ Activating a zoneset will push the new zone configuration to all fabric devices.
+        This operation cannot be undone automatically — verify you have selected the correct zoneset.
+      </div>
+      <div class="form-row">
+        <label>Zoneset / Config to Activate <span class="req">*</span></label>
+        <select id="activate-zoneset-select" class="input" style="width:100%">
+          <option value="">— select zoneset —</option>
+        </select>
+      </div>
+      <div id="activate-result" class="result-box hidden" style="max-height:260px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-activate-zoneset')">Cancel</button>
+      <button class="btn btn-orange" id="btn-activate-save" onclick="activateZoneset()">⚡ Activate Now</button>
+    </div>
+  </div>
+</div>
 
 <div id="zoning-content">
   <div class="card"><div class="muted center">Select a SAN switch above to view its zoning.</div></div>
@@ -30,16 +152,65 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+/* ── Zoning page enhancements ── */
+.zone-active-row td { background: #f0fdf4 !important; }
+.zone-active-row td:first-child { border-left: 3px solid #1a7f37; }
+
+.wwpn-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0;
+}
+.wwpn-copy-btn {
+  background: none; border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px; font-size: 11px;
+  cursor: pointer; color: var(--muted); line-height: 1.4;
+  transition: background .12s, color .12s;
+  white-space: nowrap;
+}
+.wwpn-copy-btn:hover { background: var(--blue-bg); color: var(--blue-text); border-color: var(--blue-text); }
+.wwpn-copy-btn.copied { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+
+.member-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 18px; padding: 0 5px;
+  font-size: 11px; font-weight: 700;
+  background: var(--blue-bg); color: var(--blue-text);
+  border-radius: 10px; margin-left: 6px; vertical-align: middle;
+}
+.member-badge-green {
+  background: var(--green-bg); color: var(--green);
+}
+
+.zone-member-pill {
+  display: inline-block;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px; font-size: 11px;
+  margin: 1px 2px; color: var(--muted);
+}
+.zone-member-pill.is-alias { color: var(--blue-text); background: var(--blue-bg); border-color: #bfdbfe; }
+
+.zoneset-member-pill {
+  display: inline-block;
+  background: var(--green-bg); border: 1px solid #86efac;
+  border-radius: 4px; padding: 1px 6px; font-size: 11px;
+  margin: 1px 2px; color: var(--green);
+}
+
+.section-summary {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--muted); margin-bottom: 10px;
+}
+</style>
+
 <script>
 const urlParams = new URLSearchParams(window.location.search);
-let _zoningData = null;   // cached fabric data for client-side search
-let _portData = null;     // cached switch port status
-
+let _zoningData = null;
+let _portData   = null;
 
 async function initSwitches() {
-
   const data = await fetch("/api/san/switches").then(r => r.json());
-  const sel = document.getElementById("switch-selector");
+  const sel  = document.getElementById("switch-selector");
   sel.innerHTML = '<option value="">— select switch —</option>' +
     data.map(s => `<option value="${s.id}">${s.name} (${s.host}) · ${s.vendor}</option>`).join("");
   const pre = urlParams.get("switch");
@@ -49,9 +220,9 @@ async function initSwitches() {
 function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 async function loadZoning(debug) {
-  const id = document.getElementById("switch-selector").value;
+  const id        = document.getElementById("switch-selector").value;
   const container = document.getElementById("zoning-content");
-  const badge = document.getElementById("active-badge");
+  const badge     = document.getElementById("active-badge");
   if (!id) { showToast("Select a switch first", "warn"); return; }
 
   container.innerHTML = '<div class="card"><div class="muted center">Loading fabric…</div></div>';
@@ -72,7 +243,7 @@ async function loadZoning(debug) {
   }
 
   if (d.active_zoneset) {
-    badge.textContent = "Active: " + d.active_zoneset;
+    badge.textContent  = "✔ Active: " + d.active_zoneset;
     badge.style.display = "";
   }
 
@@ -82,36 +253,26 @@ async function loadZoning(debug) {
     return;
   }
 
-  // Cache the full dataset so search can filter client-side without re-fetching
   _zoningData = {
-    aliases:        d.aliases || [],
-    zones:          d.zones || [],
+    aliases:        d.aliases  || [],
+    zones:          d.zones    || [],
     zonesets:       d.zonesets || [],
     active_zoneset: d.active_zoneset || "",
   };
 
-  // Fetch switch port status (non-blocking — graph appears once loaded)
   loadPorts(id);
-
   render();
 }
 
-// ── Switch port status graph ──────────────────────────────
 async function loadPorts(id) {
   _portData = null;
   try {
     const d = await fetch(`/api/san/switches/${id}/ports`).then(r => r.json());
     if (d.ok) _portData = d;
-  } catch (e) {
-    _portData = null;
-  }
-  render();   // re-render so the graph appears above the tables
+  } catch (e) { _portData = null; }
+  render();
 }
 
-
-// ── Search / filter ───────────────────────────────────────
-// Matches: alias name, alias member (WWPN), zone name, zoneset name.
-// Zones also match if any of their member aliases match.
 function applySearch() { render(); }
 
 function clearSearch() {
@@ -133,7 +294,6 @@ function render() {
   let zonesets = d.zonesets;
 
   if (q) {
-    // Normalised WWPN comparison: strip colons so "10:00:.." matches "1000.."
     const qn = q.replace(/:/g, "");
 
     const aliasMatch = a =>
@@ -144,8 +304,6 @@ function render() {
       });
 
     aliases = d.aliases.filter(aliasMatch);
-
-    // Set of alias names that matched — used to also surface parent zones
     const matchedAliasNames = new Set(aliases.map(a => (a.name || "").toLowerCase()));
 
     const zoneMatch = z =>
@@ -157,7 +315,6 @@ function render() {
       });
 
     zones = d.zones.filter(zoneMatch);
-
     const matchedZoneNames = new Set(zones.map(z => (z.name || "").toLowerCase()));
 
     zonesets = d.zonesets.filter(zs =>
@@ -166,15 +323,18 @@ function render() {
     );
   }
 
+  // Build a set of known alias names for pill colouring in zones
+  const aliasNameSet = new Set(d.aliases.map(a => (a.name || "").toLowerCase()));
+
   const container = document.getElementById("zoning-content");
   container.innerHTML =
     renderPortGraph() +
     renderZonesets(zonesets, d.active_zoneset) +
-    renderZones(zones) +
+    renderZones(zones, d.active_zoneset, aliasNameSet) +
     renderAliases(aliases);
 }
 
-// ── Draw the switch and its ports (up/down status) ────────
+// ── Port graph ────────────────────────────────────────────
 function renderPortGraph() {
   if (!_portData) {
     return `<div class="card">
@@ -183,8 +343,8 @@ function renderPortGraph() {
     </div>`;
   }
 
-  const ports = _portData.ports || [];
-  const name  = _portData.switch_name || "SAN Switch";
+  const ports   = _portData.ports || [];
+  const name    = _portData.switch_name || "SAN Switch";
   const upCount = ports.filter(p => p.up).length;
   const total   = ports.length;
 
@@ -197,100 +357,348 @@ function renderPortGraph() {
 
   const q = currentQuery();
 
-  const cells = ports.map(p => {
-    const up   = p.up;
-    // Colour: green = up/online, red = fault, grey = no light / disabled
-    let bg = "#9aa0a6", border = "#7c8085";           // default grey (idle)
-    const st = (p.state || "").toLowerCase();
-    if (up) { bg = "#1a7f37"; border = "#14612a"; }    // green = online
-    else if (/flt|fault|err|fail/.test(st)) { bg = "#d1242f"; border = "#a41722"; } // red = fault
+  // Build a lookup by port index for fast access
+  const portByIdx = {};
+  ports.forEach(p => { portByIdx[String(p.index)] = p; });
 
-    // Highlight ports whose WWN matches the current search box
+  // Brocade switches use a quad-column layout:
+  // Top row: 0,1,2,3 | 8,9,10,11 | 16,17,18,19 | ...
+  // Bot row: 4,5,6,7 | 12,13,14,15 | 20,21,22,23 | ...
+  // Group ports into quads of 8 (4 top + 4 bottom)
+  const maxIdx = Math.max(...ports.map(p => parseInt(p.index, 10)));
+  const numQuads = Math.ceil((maxIdx + 1) / 8);
+
+  function makePortCell(idx) {
+    const key = String(idx);
+    const p = portByIdx[key];
+    if (!p) {
+      // Empty slot
+      return `<div style="width:46px;height:46px;border-radius:6px;background:#2a2e38;border:1px solid #3a3f4a;opacity:0.3"></div>`;
+    }
+    const st = (p.state || "").toLowerCase();
+    let bg = "#4a5568", border = "#3a4050", glow = "";
+    if (p.up) { bg = "#16a34a"; border = "#15803d"; glow = "box-shadow:0 0 8px rgba(22,163,74,0.5);"; }
+    else if (/flt|fault|err|fail/.test(st)) { bg = "#dc2626"; border = "#b91c1c"; glow = "box-shadow:0 0 8px rgba(220,38,38,0.5);"; }
+
     let ring = "";
     if (q) {
       const qn = q.replace(/:/g, "");
-      const w  = (p.wwn || "").toLowerCase();
+      const w = (p.wwn || "").toLowerCase();
       if (w && (w.includes(q) || w.replace(/:/g, "").includes(qn)))
-        ring = "box-shadow:0 0 0 3px #f5a623;";
+        ring = "outline:2px solid #f59e0b;outline-offset:2px;";
     }
 
     const tip = `Port ${p.index}\nState: ${p.state}\nSpeed: ${p.speed}\nType: ${p.type}`
               + (p.wwn ? `\nWWN: ${p.wwn}` : "");
 
-    return `<div title="${esc(tip)}" style="
-        width:34px;height:34px;border-radius:5px;display:flex;
-        align-items:center;justify-content:center;font-size:11px;color:#fff;
-        font-weight:600;background:${bg};border:1px solid ${border};${ring}
-        cursor:default;user-select:none;">
-        ${esc(String(p.index))}
-      </div>`;
-  }).join("");
+    // SFP connector visual inside the port
+    const sfpColor = p.up ? "#86efac" : "#6b7280";
+    const switchId = document.getElementById("switch-selector").value;
+    return `<div title="${esc(tip)}" onclick="showPortLogin('${switchId}',${p.index})" style="
+        width:46px;height:46px;border-radius:6px;
+        background:${bg};border:2px solid ${border};${glow}${ring}
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        cursor:pointer;user-select:none;position:relative;flex-shrink:0;
+        transition:filter .12s;">
+      <div style="width:22px;height:8px;background:${sfpColor};border-radius:2px;margin-bottom:3px;opacity:0.8"></div>
+      <div style="font-size:10px;color:#fff;font-weight:700;line-height:1">${esc(String(p.index))}</div>
+    </div>`;
+  }
 
-  return `<div class="card">
-    <div class="card-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <span>Switch Ports — ${esc(name)}</span>
-      <span class="badge badge-green">${upCount} up</span>
-      <span class="badge badge-grey">${total - upCount} down/idle</span>
-      <span class="badge badge-blue">${total} total</span>
-    </div>
+  // Build the switch face: groups of 8 ports (4 top + 4 bottom) separated by small gaps
+  let topRow = '';
+  let botRow = '';
+  for (let q = 0; q < numQuads; q++) {
+    const base = q * 8;
+    if (q > 0) {
+      topRow += `<div style="width:10px;flex-shrink:0"></div>`;
+      botRow += `<div style="width:10px;flex-shrink:0"></div>`;
+    }
+    for (let i = 0; i < 4; i++) { topRow += makePortCell(base + i); }
+    for (let i = 4; i < 8; i++) { botRow += makePortCell(base + i); }
+  }
 
-    <div style="display:flex;align-items:center;gap:14px;margin:6px 0 12px">
-      <!-- simple switch chassis illustration -->
-      <div style="background:#1f2733;border-radius:8px;padding:10px 12px;color:#cbd5e1;
-                  font-size:12px;font-weight:600;letter-spacing:.5px;white-space:nowrap">
-        ▤ ${esc(name)}
+  return `<div class="card" style="padding:0;overflow:hidden">
+    <div style="background:#1a1d23;border-radius:var(--radius) var(--radius) 0 0;padding:14px 20px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <span style="color:#e2e8f0;font-size:14px;font-weight:700;letter-spacing:.5px">▤ ${esc(name)}</span>
+        <span class="badge badge-green" style="font-size:11px">${upCount} online</span>
+        <span class="badge badge-grey" style="font-size:11px">${total - upCount} idle/down</span>
+        <span class="badge badge-blue" style="font-size:11px">${total} total</span>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;flex:1">${cells}</div>
+      <!-- Port face: top row (0-3,8-11,...) above bottom row (4-7,12-15,...) -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">${topRow}</div>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">${botRow}</div>
+      </div>
     </div>
-
-    <div style="display:flex;gap:16px;font-size:12px" class="muted">
-      <span><span style="display:inline-block;width:12px;height:12px;background:#1a7f37;border-radius:3px;vertical-align:middle;margin-right:4px"></span>Online / Up</span>
-      <span><span style="display:inline-block;width:12px;height:12px;background:#9aa0a6;border-radius:3px;vertical-align:middle;margin-right:4px"></span>No light / Idle</span>
-      <span><span style="display:inline-block;width:12px;height:12px;background:#d1242f;border-radius:3px;vertical-align:middle;margin-right:4px"></span>Fault</span>
+    <div style="padding:10px 20px 12px;display:flex;gap:20px;font-size:12px;flex-wrap:wrap">
+      <span style="display:flex;align-items:center;gap:5px;color:var(--muted)">
+        <span style="width:14px;height:14px;background:#16a34a;border-radius:3px;display:inline-block"></span>Online / Up
+      </span>
+      <span style="display:flex;align-items:center;gap:5px;color:var(--muted)">
+        <span style="width:14px;height:14px;background:#4a5568;border-radius:3px;display:inline-block"></span>No light / Idle
+      </span>
+      <span style="display:flex;align-items:center;gap:5px;color:var(--muted)">
+        <span style="width:14px;height:14px;background:#dc2626;border-radius:3px;display:inline-block"></span>Fault
+      </span>
+      <span style="margin-left:auto;color:var(--muted);font-size:11px">Click a port to view login info</span>
     </div>
+    <div id="port-login-panel" style="display:none;border-top:1px solid #2d3139;padding:14px 20px;background:#1a1d23"></div>
   </div>`;
 }
 
+// ── Port login detail ─────────────────────────────────────
+let _portLoginCache = {};
 
+async function showPortLogin(switchId, portIndex) {
+  const panel = document.getElementById("port-login-panel");
+  if (!panel) return;
+  panel.style.display = "block";
+  panel.innerHTML = `<div style="color:#9ca3af;font-size:12px">⏳ Loading portloginshow ${portIndex}…</div>`;
 
+  const cacheKey = `${switchId}:${portIndex}`;
+  if (_portLoginCache[cacheKey]) {
+    renderPortLogin(panel, portIndex, _portLoginCache[cacheKey]);
+    return;
+  }
+
+  try {
+    const d = await fetch(`/api/san/switches/${switchId}/ports/${portIndex}/login`).then(r => r.json());
+    _portLoginCache[cacheKey] = d;
+    renderPortLogin(panel, portIndex, d);
+  } catch(e) {
+    panel.innerHTML = `<div style="color:#f87171;font-size:12px">✗ Request failed: ${esc(String(e))}</div>`;
+  }
+}
+
+function renderPortLogin(panel, portIndex, d) {
+  if (!d.ok || !d.logins || !d.logins.length) {
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="color:#e2e8f0;font-weight:600;font-size:13px">Port ${portIndex} — Login Info</span>
+        <button onclick="document.getElementById('port-login-panel').style.display='none'"
+                style="margin-left:auto;background:none;border:none;color:#6b7280;cursor:pointer;font-size:16px">✕</button>
+      </div>
+      <div style="color:#9ca3af;font-size:12px">${d.ok ? "No logged-in devices on this port." : esc(d.error || "No data")}</div>
+      ${d.raw ? `<pre style="background:#111;color:#6b7280;font-size:10px;padding:6px 8px;border-radius:4px;margin-top:8px;max-height:120px;overflow-y:auto;white-space:pre-wrap">${escHtml(d.raw)}</pre>` : ''}`;
+    return;
+  }
+
+  const rows = d.logins.map(l => `
+    <tr style="border-bottom:1px solid #2d3139">
+      <td style="padding:5px 10px;color:#94a3b8;font-size:11px">${esc(l.type || "N")}</td>
+      <td style="padding:5px 10px;font-family:monospace;font-size:11px;color:#a5f3fc">${esc(l.wwpn)}</td>
+      <td style="padding:5px 10px;font-family:monospace;font-size:11px;color:#94a3b8">${esc(l.wwnn || "—")}</td>
+      <td style="padding:5px 10px;color:#6b7280;font-size:11px">${esc(l.pid || "—")}</td>
+      <td style="padding:5px 10px">
+        <button class="wwpn-copy-btn" style="font-size:10px" onclick="copyWWPN(this,'${l.wwpn}')">⎘ Copy</button>
+      </td>
+    </tr>`).join("");
+
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span style="color:#e2e8f0;font-weight:600;font-size:13px">Port ${portIndex} — ${d.logins.length} logged-in device${d.logins.length > 1 ? 's' : ''}</span>
+      <span style="font-size:11px;color:#6b7280;font-family:monospace">$ ${escHtml(d.command || 'portloginshow ' + portIndex)}</span>
+      <button onclick="document.getElementById('port-login-panel').style.display='none';_portLoginCache={}"
+              style="margin-left:auto;background:none;border:none;color:#6b7280;cursor:pointer;font-size:16px">✕</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:1px solid #374151">
+          <th style="padding:4px 10px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase">Type</th>
+          <th style="padding:4px 10px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase">WWPN</th>
+          <th style="padding:4px 10px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase">WWNN</th>
+          <th style="padding:4px 10px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase">PID</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ── Zonesets ─────────────────────────────────────────────
 function renderZonesets(zonesets, active) {
   zonesets = zonesets || [];
-  const rows = zonesets.map(z => `
-    <tr>
-      <td><strong>${esc(z.name)}</strong>
-        ${z.name === active ? '<span class="badge badge-green" style="margin-left:6px">active</span>' : ''}</td>
-      <td class="muted">${(z.members||[]).map(esc).join(", ") || "—"}</td>
-    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No zonesets</td></tr>';
+  const rows = zonesets.map(z => {
+    const isActive = z.name === active;
+    const members  = z.members || [];
+    const pills    = members.map(m =>
+      `<span class="zoneset-member-pill">${esc(m)}</span>`
+    ).join("") || '<span class="muted">—</span>';
+    return `
+    <tr class="${isActive ? 'zone-active-row' : ''}">
+      <td>
+        <strong>${esc(z.name)}</strong>
+        ${isActive ? '<span class="badge badge-green" style="margin-left:6px">● active</span>' : ''}
+      </td>
+      <td>
+        <span class="member-badge member-badge-green" title="${members.length} zones">${members.length}</span>
+      </td>
+      <td>${pills}</td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="3" class="muted center">No zonesets</td></tr>';
+
   return `<div class="card">
-    <div class="card-title">Zonesets / Configs (${zonesets.length})</div>
-    <table class="data-table"><thead><tr><th>Name</th><th>Zones</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+    <div class="card-title">
+      Zonesets / Configs
+      <span class="member-badge">${zonesets.length}</span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Zones</th><th>Member Zones</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 
-function renderZones(zones) {
+// ── Zones ─────────────────────────────────────────────────
+function renderZones(zones, active_zoneset, aliasNameSet) {
   zones = zones || [];
-  const rows = zones.map(z => `
+
+  // Build lookup: zone name -> which zonesets contain it
+  const zoneToSets = {};
+  if (_zoningData) {
+    for (const zs of (_zoningData.zonesets || [])) {
+      for (const m of (zs.members || [])) {
+        if (!zoneToSets[m]) zoneToSets[m] = [];
+        zoneToSets[m].push(zs.name);
+      }
+    }
+  }
+
+  const switchId = document.getElementById("switch-selector").value;
+
+  const rows = zones.map(z => {
+    const members = z.members || [];
+    const pills   = members.map(m => {
+      const isAlias = aliasNameSet && aliasNameSet.has((m || "").toLowerCase());
+      return `<span class="zone-member-pill ${isAlias ? 'is-alias' : ''}" title="${isAlias ? 'Alias' : 'WWN/member'}">${esc(m)}</span>`;
+    }).join("") || '<span class="muted">—</span>';
+
+    const inSets = (zoneToSets[z.name] || []);
+    const setTags = inSets.map(s =>
+      `<span class="badge ${s === active_zoneset ? 'badge-green' : 'badge-grey'}" style="font-size:10px;margin-left:3px">${esc(s)}</span>`
+    ).join("");
+
+    const safeName = z.name.replace(/'/g, "\\'");
+    return `
     <tr>
-      <td><strong>${esc(z.name)}</strong></td>
-      <td class="muted">${(z.members||[]).map(esc).join(", ") || "—"}</td>
-    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No zones</td></tr>';
+      <td>
+        <strong>${esc(z.name)}</strong>
+        ${setTags}
+      </td>
+      <td style="text-align:center">
+        <span class="member-badge" title="${members.length} members">${members.length}</span>
+      </td>
+      <td>${pills}</td>
+      <td class="action-cell">
+        <button class="btn btn-xs btn-red" onclick="deleteZone('${switchId}','${safeName}')">🗑 Delete</button>
+      </td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="4" class="muted center">No zones</td></tr>';
+
   return `<div class="card">
-    <div class="card-title">Zones (${zones.length})</div>
-    <table class="data-table"><thead><tr><th>Name</th><th>Members</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+    <div class="card-title">
+      Zones
+      <span class="member-badge">${zones.length}</span>
+      <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:6px">
+        <span class="zone-member-pill is-alias">alias</span> = named alias &nbsp;
+        <span class="zone-member-pill">member</span> = raw WWN
+      </span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Zone Name</th><th style="text-align:center">Members</th><th>Members / Aliases</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 
+// ── Aliases ───────────────────────────────────────────────
 function renderAliases(aliases) {
   aliases = aliases || [];
-  const rows = aliases.map(a => `
+
+  const switchId = document.getElementById("switch-selector").value;
+
+  const rows = aliases.map(a => {
+    const members = a.members || [];
+    const wwpnRows = members.map((m, i) => `
+      <div class="wwpn-row">
+        <code style="font-size:12px;flex:1">${esc(m)}</code>
+        <button class="wwpn-copy-btn" onclick="copyWWPN(this, '${m.replace(/'/g,"\\'")}')">⎘ Copy</button>
+      </div>`).join("") || '<span class="muted">—</span>';
+
+    const safeName = a.name.replace(/'/g, "\\'");
+    return `
     <tr>
       <td><strong>${esc(a.name)}</strong></td>
-      <td class="muted"><code>${(a.members||[]).map(esc).join(", ") || "—"}</code></td>
-    </tr>`).join("") || '<tr><td colspan="2" class="muted center">No aliases</td></tr>';
+      <td style="text-align:center">
+        <span class="member-badge" title="${members.length} WWPNs">${members.length}</span>
+      </td>
+      <td>${wwpnRows}</td>
+      <td class="action-cell">
+        <button class="btn btn-xs btn-red" onclick="deleteAlias('${switchId}','${safeName}')">🗑 Delete</button>
+      </td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="4" class="muted center">No aliases</td></tr>';
+
   return `<div class="card">
-    <div class="card-title">Aliases (${aliases.length})</div>
-    <table class="data-table"><thead><tr><th>Name</th><th>WWPN / Member</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+    <div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>Aliases</span>
+      <span class="member-badge">${aliases.length}</span>
+      <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">
+        (from Defined configuration — visible after <code>cfgsave</code>, active after <code>cfgenable</code>)
+      </span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Alias Name</th><th style="text-align:center">WWPNs</th><th>WWPNs</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+// ── Delete Alias ──────────────────────────────────────────
+async function deleteAlias(switchId, name) {
+  if (!confirm(`Delete alias "${name}"?\nThis will run alidelete and cfgsave -f on the switch.`)) return;
+  showToast(`Deleting alias "${name}"…`, "info");
+  const r = await fetch(`/api/san/switches/${switchId}/alias/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  }).then(r => r.json());
+  if (r.ok) {
+    showToast(`✔ Alias "${name}" deleted`, "success");
+    _zoningData = null;
+    loadZoning();
+  } else {
+    showToast(`✗ ${r.error || "Delete failed"}`, "error");
+  }
+}
+
+// ── Delete Zone ───────────────────────────────────────────
+async function deleteZone(switchId, name) {
+  if (!confirm(`Delete zone "${name}"?\nThis will run zonedelete and cfgsave -f on the switch.`)) return;
+  showToast(`Deleting zone "${name}"…`, "info");
+  const r = await fetch(`/api/san/switches/${switchId}/zone/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  }).then(r => r.json());
+  if (r.ok) {
+    showToast(`✔ Zone "${name}" deleted`, "success");
+    _zoningData = null;
+    loadZoning();
+  } else {
+    showToast(`✗ ${r.error || "Delete failed"}`, "error");
+  }
+}
+
+function copyWWPN(btn, wwpn) {
+  navigator.clipboard.writeText(wwpn).then(() => {
+    btn.textContent = "✔ Copied!";
+    btn.classList.add("copied");
+    setTimeout(() => {
+      btn.textContent = "⎘ Copy";
+      btn.classList.remove("copied");
+    }, 1800);
+  }).catch(() => {
+    showToast("Copy failed — browser may require HTTPS", "warn");
+  });
 }
 
 function renderDebug(raw) {
@@ -299,15 +707,295 @@ function renderDebug(raw) {
     const ok = res.ok;
     html += `<div style="margin-bottom:14px">
       <div style="font-weight:600;font-size:12px;margin-bottom:3px">
-        <span class="badge ${ok?'badge-green':'badge-red'}">${ok?'ok':'err'}</span>&nbsp;${esc(key)}
+        <span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'ok' : 'err'}</span>&nbsp;${esc(key)}
       </div>
-      <pre class="raw-pre">${esc(ok ? (res.output||'(empty)') : (res.error||''))}</pre>
+      <pre class="raw-pre">${esc(ok ? (res.output || '(empty)') : (res.error || ''))}</pre>
     </div>`;
   }
   html += '</div>';
   return html;
 }
 
+// ── Modal helpers ─────────────────────────────────────────
+function openModal(id) {
+  // Populate activate-zoneset dropdown with current zonesets
+  if (id === "modal-activate-zoneset" && _zoningData) {
+    const sel = document.getElementById("activate-zoneset-select");
+    sel.innerHTML = '<option value="">— select zoneset —</option>' +
+      (_zoningData.zonesets || []).map(z =>
+        `<option value="${esc(z.name)}">${esc(z.name)}${z.name === _zoningData.active_zoneset ? ' (currently active)' : ''}</option>`
+      ).join("");
+    document.getElementById("activate-result").className = "result-box hidden";
+  }
+  // Populate zoneset datalist for Add to Zoneset modal
+  if (id === "modal-add-to-zoneset" && _zoningData) {
+    const dl = document.getElementById("zoneset-datalist");
+    dl.innerHTML = (_zoningData.zonesets || []).map(z =>
+      `<option value="${esc(z.name)}">`
+    ).join("");
+    document.getElementById("zoneset-result").className = "result-box hidden";
+  }
+  if (id === "modal-create-alias") {
+    document.getElementById("alias-name").value = "";
+    document.getElementById("alias-members").value = "";
+    document.getElementById("alias-result").className = "result-box hidden";
+  }
+  if (id === "modal-create-zone") {
+    document.getElementById("zone-name").value = "";
+    document.getElementById("zone-members").value = "";
+    document.getElementById("zone-result").className = "result-box hidden";
+  }
+  document.getElementById(id).classList.remove("hidden");
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.add("hidden");
+}
+
+function setWriteBtnsEnabled(enabled) {
+  ["btn-create-alias", "btn-create-zone", "btn-add-zoneset", "btn-activate"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enabled;
+  });
+}
+
+function showModalResult(elId, ok, msg, cmdDetails) {
+  const el = document.getElementById(elId);
+  el.className = "result-box " + (ok ? "success" : "error");
+
+  // Build HTML: status message + optional command detail block
+  let html = `<div style="font-weight:600;margin-bottom:6px">${ok ? "✔" : "✗"} ${escHtml(msg)}</div>`;
+
+  if (cmdDetails && cmdDetails.length) {
+    html += `<div style="margin-top:8px">`;
+    for (const step of cmdDetails) {
+      const stepOk = step.ok;
+      const stepOut = (step.output || step.error || "").trim();
+      html += `
+        <div style="margin-bottom:6px">
+          <div style="font-size:11px;font-weight:600;color:${stepOk ? 'var(--green)' : 'var(--red)'};margin-bottom:2px">
+            <span style="font-family:monospace">${escHtml(step.name)}</span>
+            <span style="font-weight:400;color:var(--muted);margin-left:6px">${stepOk ? '✔ ok' : '✘ failed'}</span>
+          </div>
+          <pre style="background:#1e1e1e;color:#d4d4d4;font-size:11px;padding:6px 8px;border-radius:4px;
+                      overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0"
+          ><span style="color:#9cdcfe">$ </span>${escHtml(step.command)}</pre>
+          ${stepOut ? `<pre style="background:#111;color:${stepOk ? '#a8ff78' : '#ff6b6b'};font-size:11px;
+                           padding:4px 8px;border-radius:0 0 4px 4px;overflow-x:auto;
+                           white-space:pre-wrap;word-break:break-all;margin:0;border-top:1px solid #333"
+          >${escHtml(stepOut)}</pre>` : ''}
+        </div>`;
+    }
+    html += `</div>`;
+  } else if (!ok) {
+    // Fallback for Cisco single-command response
+    const cmd = cmdDetails && cmdDetails.command ? cmdDetails.command : null;
+    if (cmd) {
+      html += `<pre style="background:#1e1e1e;color:#d4d4d4;font-size:11px;padding:6px 8px;
+                           border-radius:4px;overflow-x:auto;white-space:pre-wrap;margin-top:6px"
+               ><span style="color:#9cdcfe">$ </span>${escHtml(cmd)}</pre>`;
+    }
+  }
+
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+}
+
+function escHtml(s) {
+  return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function setBtnLoading(btnId, loading, originalText) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.disabled = loading;
+  btn.textContent = loading ? "Sending…" : originalText;
+}
+
+// ── Alias command preview ─────────────────────────────────
+function updateAliasPreview() {
+  const name    = document.getElementById("alias-name").value.trim();
+  const rawText = document.getElementById("alias-members").value;
+  const members = rawText.split(/\n/).map(s => s.trim()).filter(Boolean);
+  const preview = document.getElementById("alias-preview");
+  const preCmd  = document.getElementById("alias-preview-cmd");
+  if (name && members.length) {
+    const membersStr = members.join(";");
+    preCmd.textContent = `alicreate "${name}", "${membersStr}"`;
+    preview.style.display = "";
+  } else {
+    preview.style.display = "none";
+  }
+}
+
+// ── Create Alias ──────────────────────────────────────────
+async function saveAlias() {
+  const switchId = document.getElementById("switch-selector").value;
+  const name     = document.getElementById("alias-name").value.trim();
+  const raw      = document.getElementById("alias-members").value;
+  const members  = raw.split(/\n/).map(s => s.trim()).filter(Boolean);
+
+  if (!name)           { showModalResult("alias-result", false, "Alias name is required"); return; }
+  if (!members.length) { showModalResult("alias-result", false, "At least one WWPN is required"); return; }
+
+  // Show live progress before the request starts
+  const resEl = document.getElementById("alias-result");
+  resEl.className = "result-box info";
+  resEl.innerHTML = `<div style="font-weight:600">⏳ Sending commands to switch…</div>
+    <pre style="background:#1e1e1e;color:#9cdcfe;font-size:11px;padding:4px 8px;border-radius:4px;margin-top:4px;white-space:pre-wrap">$ alicreate "${esc(name)}", "${esc(members.join(";"))}"</pre>`;
+  resEl.classList.remove("hidden");
+
+  setBtnLoading("btn-alias-save", true, "Create Alias");
+  const r = await fetch(`/api/san/switches/${switchId}/alias`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, members }),
+  }).then(r => r.json());
+  setBtnLoading("btn-alias-save", false, "Create Alias");
+
+  showModalResult("alias-result", r.ok, r.ok ? (r.output || "Alias created successfully") : (r.error || "Failed"), r.commands_run || (r.command ? r : null));
+  if (r.ok) {
+    showToast(`✔ Alias "${name}" created`, "success");
+    // Switch Cancel → Done so user can read the output before closing
+    const cancelBtn = document.getElementById("btn-alias-cancel");
+    if (cancelBtn) {
+      cancelBtn.textContent = "✔ Done";
+      cancelBtn.className = "btn btn-green";
+      cancelBtn.onclick = () => {
+        closeModal("modal-create-alias");
+        document.getElementById("zoning-search").value = "";
+        _zoningData = null;
+        loadZoning();
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.onclick = () => closeModal("modal-create-alias");
+      };
+    }
+  }
+}
+
+// ── Create Zone ───────────────────────────────────────────
+async function saveZone() {
+  const switchId = document.getElementById("switch-selector").value;
+  const name     = document.getElementById("zone-name").value.trim();
+  const raw      = document.getElementById("zone-members").value;
+  const members  = raw.split(/\n/).map(s => s.trim()).filter(Boolean);
+
+  if (!name)           { showModalResult("zone-result", false, "Zone name is required"); return; }
+  if (!members.length) { showModalResult("zone-result", false, "At least one member is required"); return; }
+
+  setBtnLoading("btn-zone-save", true, "Create Zone");
+  const r = await fetch(`/api/san/switches/${switchId}/zone`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, members }),
+  }).then(r => r.json());
+  setBtnLoading("btn-zone-save", false, "Create Zone");
+
+  showModalResult("zone-result", r.ok, r.ok ? (r.output || "Zone created successfully") : (r.error || "Failed"), r.commands_run || (r.command ? r : null));
+  if (r.ok) {
+    showToast(`✔ Zone "${name}" created`, "success");
+    const cancelBtn = document.getElementById("btn-zone-cancel");
+    if (cancelBtn) {
+      cancelBtn.textContent = "✔ Done";
+      cancelBtn.className = "btn btn-green";
+      cancelBtn.onclick = () => {
+        closeModal("modal-create-zone");
+        document.getElementById("zoning-search").value = "";
+        _zoningData = null;
+        loadZoning();
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.onclick = () => closeModal("modal-create-zone");
+      };
+    }
+  }
+}
+
+// ── Add Zone to Zoneset ───────────────────────────────────
+async function saveZonesetAdd() {
+  const switchId = document.getElementById("switch-selector").value;
+  const zoneset  = document.getElementById("zoneset-target").value.trim();
+  const raw      = document.getElementById("zoneset-zones").value;
+  const zones    = raw.split(/\n/).map(s => s.trim()).filter(Boolean);
+
+  if (!zoneset)       { showModalResult("zoneset-result", false, "Zoneset name is required"); return; }
+  if (!zones.length)  { showModalResult("zoneset-result", false, "At least one zone is required"); return; }
+
+  setBtnLoading("btn-zoneset-save", true, "Add to Zoneset");
+  const r = await fetch(`/api/san/switches/${switchId}/zoneset/add-zones`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ zoneset, zones }),
+  }).then(r => r.json());
+  setBtnLoading("btn-zoneset-save", false, "Add to Zoneset");
+
+  showModalResult("zoneset-result", r.ok, r.ok ? (r.output || "Zones added successfully") : (r.error || "Failed"), r.commands_run || (r.command ? r : null));
+  if (r.ok) {
+    showToast(`✔ Zone(s) added to "${zoneset}"`, "success");
+    const cancelBtn = document.getElementById("btn-zoneset-cancel");
+    if (cancelBtn) {
+      cancelBtn.textContent = "✔ Done";
+      cancelBtn.className = "btn btn-green";
+      cancelBtn.onclick = () => {
+        closeModal("modal-add-to-zoneset");
+        document.getElementById("zoning-search").value = "";
+        _zoningData = null;
+        loadZoning();
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.onclick = () => closeModal("modal-add-to-zoneset");
+      };
+    }
+  }
+}
+
+// ── Activate Zoneset ──────────────────────────────────────
+async function activateZoneset() {
+  const switchId = document.getElementById("switch-selector").value;
+  const zoneset  = document.getElementById("activate-zoneset-select").value;
+
+  if (!zoneset) { showModalResult("activate-result", false, "Please select a zoneset"); return; }
+
+  if (!confirm(`⚠ Activate zoneset "${zoneset}" on this switch?\nThis will push the zone config to all fabric devices.`)) return;
+
+  setBtnLoading("btn-activate-save", true, "⚡ Activate Now");
+  const r = await fetch(`/api/san/switches/${switchId}/zoneset/activate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ zoneset }),
+  }).then(r => r.json());
+  setBtnLoading("btn-activate-save", false, "⚡ Activate Now");
+
+  showModalResult("activate-result", r.ok, r.ok ? (r.output || `Zoneset "${zoneset}" activated`) : (r.error || "Failed"), r.commands_run || (r.command ? r : null));
+  if (r.ok) {
+    showToast(`✔ Zoneset "${zoneset}" activated`, "success");
+    const cancelBtn = document.querySelector("#modal-activate-zoneset .modal-footer .btn-secondary");
+    if (cancelBtn) {
+      cancelBtn.textContent = "✔ Done";
+      cancelBtn.className = "btn btn-green";
+      cancelBtn.onclick = () => {
+        closeModal("modal-activate-zoneset");
+        document.getElementById("zoning-search").value = "";
+        _zoningData = null;
+        loadZoning();
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.className = "btn btn-secondary";
+        cancelBtn.onclick = () => closeModal("modal-activate-zoneset");
+      };
+    }
+  }
+}
+
 document.addEventListener("DOMContentLoaded", initSwitches);
+
+// Enable write buttons once a switch is loaded
+const _origLoadZoning = loadZoning;
+loadZoning = async function(debug) {
+  setWriteBtnsEnabled(false);
+  await _origLoadZoning(debug);
+  const id = document.getElementById("switch-selector").value;
+  if (id && !debug) setWriteBtnsEnabled(true);
+};
 </script>
 {% endblock %}

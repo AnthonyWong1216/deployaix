@@ -237,6 +237,11 @@ def zoning_page():
     return render_template("zoning.html")
 
 
+@app.route("/vfc-map")
+def vfc_map_page():
+    return render_template("vfc_map.html")
+
+
 
 # ──────────────────────────────────────────────────────────
 # HMC connection management API
@@ -903,6 +908,11 @@ def get_vfc_topology(hmc_id, system_id):
                     continue
                 parts = line.split(",")
                 row = dict(zip(lsmap_fields, parts))
+                # Strip whitespace from every field so that blank/space-only
+                # values (e.g. clntname=" " for NOT_LOGGED_IN entries) are
+                # normalised to empty strings and won't create phantom nodes.
+                for k in row:
+                    row[k] = row[k].strip()
                 # Derive the VIOS slot (from vfchost physloc) and the client
                 # LPAR slot (from the remote/client vfc physloc).
                 row["vios_slot"] = slot_after_c(row.get("physloc", ""))
@@ -1514,6 +1524,938 @@ def get_san_ports(switch_id):
     debug = request.args.get("debug") == "1"
     result = san_manager.fetch_ports(sw, debug=debug)
     return jsonify(result)
+
+
+@app.route("/api/san/switches/<switch_id>/ports/<int:port_index>/login", methods=["GET"])
+def get_port_login(switch_id, port_index):
+    """Run portloginshow <port> and return connected WWPNs."""
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    result = san_manager.fetch_port_login(sw, port_index)
+    return jsonify(result)
+
+
+@app.route("/api/hmcs/<hmc_id>/managed-systems/<path:system_id>/lpars-list", methods=["GET"])
+def lpars_list_for_vfc(hmc_id, system_id):
+    """Return a minimal list of LPAR names for a managed system (for VFC map dropdowns)."""
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    cmd = f'lssyscfg -r lpar -m "{system_id}" -F name:lpar_id:lpar_env'
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("error", "lssyscfg failed")}), 400
+    lpars = []
+    for line in result.get("output", "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(":")
+        lpars.append({
+            "name":    parts[0],
+            "lpar_id": parts[1] if len(parts) > 1 else "",
+            "env":     parts[2] if len(parts) > 2 else "",
+        })
+    return jsonify({"ok": True, "lpars": lpars})
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/profile", methods=["POST"])
+def create_vfc_map_profile(hmc_id):
+    """Add VFC adapter to LPAR profile (for stopped LPARs).
+
+    Body: {managed_system, vios_name, vios_slot, client_lpar, profile_name,
+           client_slot, wwpn1 (optional), wwpn2 (optional)}
+    Step 1: chhwres on VIOS (server side)
+    Step 2: chsyscfg -r prof (update LPAR profile)
+    """
+    import random
+    import time as _time
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    vios_name      = (data.get("vios_name") or "").strip()
+    vios_slot      = str(data.get("vios_slot") or "").strip()
+    client_lpar    = (data.get("client_lpar") or "").strip()
+    profile_name   = (data.get("profile_name") or "").strip()
+    client_slot    = str(data.get("client_slot") or "").strip()
+    wwpn1          = (data.get("wwpn1") or "").strip().replace(":", "").lower()
+    wwpn2          = (data.get("wwpn2") or "").strip().replace(":", "").lower()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system), ("vios_name", vios_name),
+        ("vios_slot", vios_slot), ("client_lpar", client_lpar),
+        ("profile_name", profile_name), ("client_slot", client_slot)
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    def gen_wwpn():
+        import time as _t; _t.sleep(0.001)
+        b = [random.randint(0, 255) for _ in range(6)]
+        return "1000" + "".join(f"{x:02x}" for x in b)
+
+    if not wwpn1: wwpn1 = gen_wwpn()
+    if not wwpn2: wwpn2 = gen_wwpn()
+    while wwpn2 == wwpn1: wwpn2 = gen_wwpn()
+
+    # Use plain hex (no colons) in the command line
+    wwpn1_fmt = wwpn1.lower()
+    wwpn2_fmt = wwpn2.lower()
+
+    # ── Step 1: VIOS server side (chhwres) ────────────────────────
+    cmd1 = (
+        f'chhwres -r virtualio -m "{managed_system}" -o a '
+        f'-p "{vios_name}" --rsubtype fc -s {vios_slot} '
+        f'-a "adapter_type=server,remote_lpar_name={client_lpar},remote_slot_num={client_slot}"'
+    )
+    r1 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd1,
+    )
+    ok1  = r1.get("ok", False)
+    out1 = (r1.get("output") or "").strip()
+    err1 = (r1.get("error") or r1.get("stderr") or "").strip()
+    if not ok1:
+        return jsonify({
+            "ok": False, "error": f"Step 1 failed: {err1 or out1 or 'chhwres failed'}",
+            "steps": [{"step": 1, "label": "VIOS server side (chhwres)",
+                        "command": cmd1, "output": out1, "error": err1, "ok": False}],
+        }), 400
+
+    # ── Step 2: Update LPAR profile (chsyscfg -r prof) ────────────
+    # Correct HMC chsyscfg syntax:
+    #   chsyscfg -r prof -m "SYS" -i "lpar_name=X,name=P,\"virtual_fc_adapters+=\"\"spec\"\"\""
+    # adapter spec: slot/client//remote_lpar_name/remote_slot/wwpn1,wwpn2/is_required
+    adapter_spec = f'{client_slot}/client//{vios_name}/{vios_slot}/{wwpn1_fmt},{wwpn2_fmt}/0'
+    cmd2 = (
+        f'chsyscfg -r prof -m "{managed_system}" --force '
+        f'-i "lpar_name={client_lpar},name={profile_name},'
+        f'\\"virtual_fc_adapters+=\\"\\"{adapter_spec}\\"\\"\\""'
+    )
+    r2 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd2,
+    )
+    ok2  = r2.get("ok", False)
+    out2 = (r2.get("output") or "").strip()
+    err2 = (r2.get("error") or r2.get("stderr") or "").strip()
+
+    steps = [
+        {"step": 1, "label": "VIOS server side (chhwres)", "command": cmd1,
+         "output": out1 or "(no output — success)", "error": "", "ok": True},
+        {"step": 2, "label": f"Update LPAR profile '{profile_name}' (chsyscfg)", "command": cmd2,
+         "output": out2 or "(no output — success)" if ok2 else out2,
+         "error": err2 if not ok2 else "", "ok": ok2},
+    ]
+    if not ok2:
+        return jsonify({
+            "ok": False, "error": f"Step 2 failed: {err2 or out2 or 'chsyscfg failed'}",
+            "wwpn1": wwpn1_fmt, "wwpn2": wwpn2_fmt, "steps": steps,
+        }), 400
+
+    return jsonify({
+        "ok": True, "message": "VFC added to VIOS (chhwres) and LPAR profile (chsyscfg).",
+        "wwpn1": wwpn1_fmt, "wwpn2": wwpn2_fmt,
+        "generated_wwpns": not bool((data.get("wwpn1") or "").strip()),
+        "steps": steps,
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map", methods=["POST"])
+def create_vfc_map(hmc_id):
+    """Create a full VFC mapping — Step 1 (VIOS server side) then Step 2 (client side).
+
+    Body: {managed_system, vios_name, vios_slot, client_lpar, client_slot,
+           wwpn1 (optional), wwpn2 (optional)}
+    If wwpn1/wwpn2 are omitted, two random WWPNs are generated.
+    """
+    import random
+    import time as _time
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    vios_name      = (data.get("vios_name") or "").strip()
+    vios_slot      = str(data.get("vios_slot") or "").strip()
+    client_lpar    = (data.get("client_lpar") or "").strip()
+    client_slot    = str(data.get("client_slot") or "").strip()
+    wwpn1          = (data.get("wwpn1") or "").strip().replace(":", "").lower()
+    wwpn2          = (data.get("wwpn2") or "").strip().replace(":", "").lower()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system), ("vios_name", vios_name),
+        ("vios_slot", vios_slot), ("client_lpar", client_lpar), ("client_slot", client_slot)
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    # Generate WWPNs if not provided — use 10:00 prefix + random 6 bytes
+    def gen_wwpn():
+        seed = int(_time.time() * 1000) ^ random.randint(0, 0xFFFFFFFF)
+        rand = random.Random(seed)
+        b = [rand.randint(0, 255) for _ in range(6)]
+        return "1000" + "".join(f"{x:02x}" for x in b)
+
+    if not wwpn1:
+        wwpn1 = gen_wwpn()
+    if not wwpn2:
+        import time as _t2; _t2.sleep(0.001)
+        wwpn2 = gen_wwpn()
+    # Ensure the two WWPNs differ
+    while wwpn2 == wwpn1:
+        wwpn2 = gen_wwpn()
+
+    # Use plain hex (no colons) in the command line
+    wwpn1_fmt = wwpn1.lower()
+    wwpn2_fmt = wwpn2.lower()
+
+    # ── Step 1: VIOS server side ──────────────────────────────────
+    cmd1 = (
+        f'chhwres -r virtualio -m "{managed_system}" -o a '
+        f'-p "{vios_name}" --rsubtype fc -s {vios_slot} '
+        f'-a "adapter_type=server,remote_lpar_name={client_lpar},remote_slot_num={client_slot}"'
+    )
+    r1 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd1,
+    )
+    ok1  = r1.get("ok", False)
+    out1 = (r1.get("output") or "").strip()
+    err1 = (r1.get("error") or r1.get("stderr") or "").strip()
+
+    if not ok1:
+        return jsonify({
+            "ok": False,
+            "error": f"Step 1 failed: {err1 or out1 or 'chhwres failed'}",
+            "steps": [{"step": 1, "label": "VIOS server side", "command": cmd1,
+                        "output": out1, "error": err1, "ok": False}],
+        }), 400
+
+    # ── Step 2: Client LPAR side ──────────────────────────────────
+    cmd2 = (
+        f'chhwres -r virtualio -m "{managed_system}" -o a '
+        f'-p "{client_lpar}" --rsubtype fc -s {client_slot} '
+        f'-a "adapter_type=client,remote_lpar_name={vios_name},'
+        f'remote_slot_num={vios_slot},wwpns={wwpn1_fmt},{wwpn2_fmt}"'
+    )
+    r2 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd2,
+    )
+    ok2  = r2.get("ok", False)
+    out2 = (r2.get("output") or "").strip()
+    err2 = (r2.get("error") or r2.get("stderr") or "").strip()
+
+    steps = [
+        {"step": 1, "label": "VIOS server side",  "command": cmd1,
+         "output": out1 or "(no output — success)", "error": "", "ok": True},
+        {"step": 2, "label": "Client LPAR side",  "command": cmd2,
+         "output": out2 or "(no output — success)" if ok2 else out2,
+         "error": err2 if not ok2 else "", "ok": ok2},
+    ]
+
+    if not ok2:
+        return jsonify({
+            "ok": False,
+            "error": f"Step 2 failed: {err2 or out2 or 'chhwres failed'}",
+            "wwpn1": wwpn1_fmt, "wwpn2": wwpn2_fmt,
+            "steps": steps,
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "message": "VFC mapping created (both sides).",
+        "wwpn1": wwpn1_fmt,
+        "wwpn2": wwpn2_fmt,
+        "generated_wwpns": not bool((data.get("wwpn1") or "").strip()),
+        "steps": steps,
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/vfchost-list", methods=["GET"])
+def list_vfchost_for_client(hmc_id):
+    """Return the list of vfchostX adapters on a VIOS that are mapped to a specific client LPAR.
+
+    Query params: managed_system, vios_name, client_lpar_name
+    Steps:
+      1. lssyscfg to get numeric lpar_id for client_lpar_name
+      2. viosvrcmd lsmap -all -npiv -cpid <lpar_id> -fmt ,
+         → first column is the vfchostX name
+    """
+    import re as _re
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    managed_system    = (request.args.get("managed_system") or "").strip()
+    vios_name         = (request.args.get("vios_name") or "").strip()
+    client_lpar_name  = (request.args.get("client_lpar_name") or "").strip()
+
+    if not managed_system or not vios_name or not client_lpar_name:
+        return jsonify({"ok": False,
+                        "error": "managed_system, vios_name and client_lpar_name are required"}), 400
+
+    # ── Step 1: get numeric lpar_id ───────────────────────────────────────
+    cmd_lssyscfg = (
+        f'lssyscfg -m "{managed_system}" -r lpar '
+        f'--filter "lpar_names={client_lpar_name}" -F lpar_id'
+    )
+    r1 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd_lssyscfg,
+    )
+    if not r1.get("ok"):
+        return jsonify({
+            "ok": False,
+            "error": (r1.get("error") or r1.get("stderr") or "lssyscfg failed").strip(),
+            "command": cmd_lssyscfg,
+        }), 400
+
+    lpar_id = ""
+    for line in (r1.get("output") or "").splitlines():
+        line = line.strip()
+        if line and line.isdigit():
+            lpar_id = line
+            break
+        elif line and not line.lower().startswith("error") and not line.startswith("No results"):
+            lpar_id = line
+            break
+
+    if not lpar_id:
+        return jsonify({
+            "ok": False,
+            "error": f"Could not determine lpar_id for '{client_lpar_name}'",
+            "command": cmd_lssyscfg,
+        }), 400
+
+    # ── Step 2: lsmap -all -npiv -cpid <lpar_id> ─────────────────────────
+    cmd_lsmap = (
+        f'viosvrcmd -m {managed_system} -p "{vios_name}" '
+        f'-c "lsmap -all -npiv -cpid {lpar_id} -fmt ,"'
+    )
+    r2 = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd_lsmap,
+    )
+    if not r2.get("ok"):
+        return jsonify({
+            "ok": False,
+            "error": (r2.get("error") or r2.get("stderr") or "lsmap failed").strip(),
+            "command": cmd_lsmap,
+            "lpar_id": lpar_id,
+        }), 400
+
+    # Parse: first column of each comma-separated line that looks like vfchostX
+    vfchosts = []
+    for line in (r2.get("output") or "").splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("error") or line.startswith("No results"):
+            continue
+        col = line.split(",")[0].strip()
+        if _re.match(r'^vfchost\d+$', col, _re.IGNORECASE) and col not in vfchosts:
+            vfchosts.append(col)
+
+    return jsonify({
+        "ok": True,
+        "vfchosts": vfchosts,
+        "lpar_id": lpar_id,
+        "commands": [cmd_lssyscfg, cmd_lsmap],
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/fcs-adapters", methods=["GET"])
+def list_fcs_adapters(hmc_id):
+    """Return a list of physical FC adapters (fcsX) on a given VIOS.
+
+    Query params: managed_system, vios_name
+    Runs: viosvrcmd -m <managed_system> -p <vios_name> -c "lsdev"
+    Returns lines whose first column matches fcsX.
+    """
+    import re as _re
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+
+    managed_system = (request.args.get("managed_system") or "").strip()
+    vios_name      = (request.args.get("vios_name") or "").strip()
+
+    if not managed_system or not vios_name:
+        return jsonify({"ok": False, "error": "managed_system and vios_name are required"}), 400
+
+    cmd = f'viosvrcmd -m {managed_system} -p "{vios_name}" -c "lsdev"'
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+    ok  = result.get("ok", False)
+    out = (result.get("output") or "").strip()
+    err = (result.get("error") or result.get("stderr") or "").strip()
+
+    if not ok:
+        return jsonify({"ok": False, "error": err or "lsdev failed", "command": cmd}), 400
+
+    adapters = []
+    for line in out.splitlines():
+        if "fcs" not in line.lower():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        name = parts[0].strip()
+        if _re.match(r'^fcs\d+$', name, _re.IGNORECASE):
+            # Grab the rest of the line as description
+            desc = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            adapters.append({"name": name, "description": desc})
+
+    return jsonify({"ok": True, "adapters": adapters, "command": cmd})
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/vfcmap", methods=["POST"])
+def do_vfcmap(hmc_id):
+    """Map a vfchost virtual adapter to a physical FC port on the VIOS.
+
+    Step A: viosvrcmd lsdev | grep fcs  → find physical FC adapters (fcsX)
+    Step B: viosvrcmd lsmap -all -npiv  → match clntid to client LPAR id, get vfchostX
+    Step C: viosvrcmd vfcmap -vadapter <vfchostX> -fcp <fcsX>
+
+    Body: {managed_system, vios_name, client_lpar_id}
+      client_lpar_id: numeric partition id of the client LPAR (used to match lsmap clntid)
+    """
+    import re as _re
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system   = (data.get("managed_system") or "").strip()
+    vios_name        = (data.get("vios_name") or "").strip()
+    # vfchost_name may be supplied directly by the user from the dropdown;
+    # if omitted, auto-detect via lsmap using client_lpar_id (Step B).
+    vfchost_name     = (data.get("vfchost_name") or "").strip()
+    client_lpar_id   = str(data.get("client_lpar_id") or "").strip()
+    # physical_adapter may be supplied by the user from the dropdown;
+    # if omitted, auto-detect via lsdev (Step A).
+    physical_adapter = (data.get("physical_adapter") or "").strip()
+
+    # Require either vfchost_name or client_lpar_id for Step B
+    missing = [k for k, v in [
+        ("managed_system", managed_system),
+        ("vios_name", vios_name),
+    ] if not v]
+    if not vfchost_name and not client_lpar_id:
+        missing.append("vfchost_name or client_lpar_id")
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    steps = []
+
+    # ── Step A: lsdev on VIOS to find physical FC adapters ────────────────
+    # Skipped if the user already selected a physical adapter from the dropdown.
+    if physical_adapter:
+        # User chose adapter — record as a skipped/informational step
+        steps.append({
+            "step": "A", "label": "Physical FC adapter (user selected)",
+            "command": f"# user selected: {physical_adapter}",
+            "output": f"Using user-selected adapter: {physical_adapter}",
+            "note": f"Using physical adapter: {physical_adapter}",
+            "error": "", "ok": True,
+        })
+    else:
+        cmd_lsdev = f'viosvrcmd -m {managed_system} -p "{vios_name}" -c "lsdev"'
+        r_lsdev = ssh_manager.run_hmc_command(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            command=cmd_lsdev,
+        )
+        ok_lsdev  = r_lsdev.get("ok", False)
+        out_lsdev = (r_lsdev.get("output") or "").strip()
+        err_lsdev = (r_lsdev.get("error") or r_lsdev.get("stderr") or "").strip()
+
+        steps.append({
+            "step": "A", "label": "List physical FC adapters (lsdev | grep fcs)",
+            "command": cmd_lsdev + " | grep fcs",
+            "output": out_lsdev, "error": err_lsdev if not ok_lsdev else "", "ok": ok_lsdev,
+        })
+
+        if not ok_lsdev:
+            return jsonify({
+                "ok": False,
+                "error": f"Step A failed: {err_lsdev or out_lsdev or 'lsdev failed'}",
+                "steps": steps,
+            }), 400
+
+        # Parse: first column of lines matching "fcs"
+        for line in out_lsdev.splitlines():
+            if "fcs" in line.lower():
+                col = line.split()[0].strip()
+                if _re.match(r'^fcs\d+$', col, _re.IGNORECASE):
+                    physical_adapter = col
+                    break
+
+        if not physical_adapter:
+            steps[-1]["error"] = "No fcsX adapter found in lsdev output"
+            return jsonify({
+                "ok": False,
+                "error": "No physical FC adapter (fcsX) found on VIOS via lsdev.",
+                "steps": steps,
+            }), 400
+
+        steps[-1]["note"] = f"Using physical adapter: {physical_adapter}"
+
+    # ── Step B: lsmap -all -npiv to find vfchostX matching client LPAR id ─
+    # Skipped if the user already selected a vfchost from the dropdown.
+    if vfchost_name:
+        vhost_name = vfchost_name
+        steps.append({
+            "step": "B", "label": "vfchost adapter (user selected)",
+            "command": f"# user selected: {vfchost_name}",
+            "output": f"Using user-selected vfchost: {vfchost_name}",
+            "note": f"vfchost: {vfchost_name}",
+            "error": "", "ok": True,
+        })
+    else:
+        cmd_lsmap = f'viosvrcmd -m {managed_system} -p "{vios_name}" -c "lsmap -all -npiv -fmt ,"'
+        r_lsmap = ssh_manager.run_hmc_command(
+            host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+            username=hmc.get("username", "hscroot"),
+            key_path=hmc.get("key_path") or None,
+            command=cmd_lsmap,
+        )
+        ok_lsmap  = r_lsmap.get("ok", False)
+        out_lsmap = (r_lsmap.get("output") or "").strip()
+        err_lsmap = (r_lsmap.get("error") or r_lsmap.get("stderr") or "").strip()
+
+        steps.append({
+            "step": "B", "label": "List NPIV mappings (lsmap -all -npiv -fmt ,)",
+            "command": cmd_lsmap,
+            "output": out_lsmap, "error": err_lsmap if not ok_lsmap else "", "ok": ok_lsmap,
+        })
+
+        if not ok_lsmap:
+            return jsonify({
+                "ok": False,
+                "error": f"Step B failed: {err_lsmap or out_lsmap or 'lsmap failed'}",
+                "steps": steps,
+            }), 400
+
+        # lsmap -fmt , columns: vfchostX, physloc, clntid, clntname, clntos, status, ...
+        vhost_name = None
+        for line in out_lsmap.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+            vfchost_col = parts[0].strip()
+            clntid_col  = parts[2].strip()
+            if clntid_col == client_lpar_id and _re.match(r'^vfchost\d+$', vfchost_col, _re.IGNORECASE):
+                vhost_name = vfchost_col
+                break
+
+        if not vhost_name:
+            steps[-1]["error"] = (
+                f"No vfchostX found in lsmap output matching clntid={client_lpar_id}"
+            )
+            return jsonify({
+                "ok": False,
+                "error": (
+                    f"Could not find vfchostX for client LPAR id {client_lpar_id} "
+                    f"in lsmap -all -npiv output."
+                ),
+                "steps": steps,
+            }), 400
+
+        steps[-1]["note"] = f"Found vhost: {vhost_name}"
+
+    # ── Step C: vfcmap -vadapter <vhost> -fcp <fcs> ──────────────────────
+    cmd_vfcmap = (
+        f'viosvrcmd -m {managed_system} -p "{vios_name}" '
+        f'-c "vfcmap -vadapter {vhost_name} -fcp {physical_adapter}"'
+    )
+    r_vfcmap = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd_vfcmap,
+    )
+    ok_vfcmap  = r_vfcmap.get("ok", False)
+    out_vfcmap = (r_vfcmap.get("output") or "").strip()
+    err_vfcmap = (r_vfcmap.get("error") or r_vfcmap.get("stderr") or "").strip()
+
+    steps.append({
+        "step": "C", "label": f"Map vfchost to physical FC port (vfcmap)",
+        "command": cmd_vfcmap,
+        "output": out_vfcmap or "(no output — success)" if ok_vfcmap else out_vfcmap,
+        "error": err_vfcmap if not ok_vfcmap else "", "ok": ok_vfcmap,
+    })
+
+    if not ok_vfcmap:
+        return jsonify({
+            "ok": False,
+            "error": f"Step C failed: {err_vfcmap or out_vfcmap or 'vfcmap failed'}",
+            "vhost": vhost_name, "fcs": physical_adapter, "steps": steps,
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "message": f"vfcmap: {vhost_name} mapped to {physical_adapter} on VIOS {vios_name}.",
+        "vhost": vhost_name,
+        "fcs": physical_adapter,
+        "steps": steps,
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/vfcmap-remove", methods=["POST"])
+def do_vfcmap_remove(hmc_id):
+    """Remove the vfchost → physical FC port mapping on the VIOS (vfcmap -remove).
+
+    Step A: viosvrcmd lsmap -all -npiv → match clntid to client LPAR id, get vfchostX
+    Step B: viosvrcmd vfcmap -vadapter <vfchostX> -remove
+
+    Body: {managed_system, vios_name, client_lpar_id}
+    """
+    import re as _re
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    vios_name      = (data.get("vios_name") or "").strip()
+    client_lpar_id = str(data.get("client_lpar_id") or "").strip()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system),
+        ("vios_name", vios_name),
+        ("client_lpar_id", client_lpar_id),
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    steps = []
+
+    # ── Step A: lsmap -all -npiv to find vfchostX matching client LPAR id ─
+    cmd_lsmap = f'viosvrcmd -m {managed_system} -p "{vios_name}" -c "lsmap -all -npiv -fmt ,"'
+    r_lsmap = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd_lsmap,
+    )
+    ok_lsmap  = r_lsmap.get("ok", False)
+    out_lsmap = (r_lsmap.get("output") or "").strip()
+    err_lsmap = (r_lsmap.get("error") or r_lsmap.get("stderr") or "").strip()
+
+    steps.append({
+        "step": "A", "label": "List NPIV mappings (lsmap -all -npiv -fmt ,)",
+        "command": cmd_lsmap,
+        "output": out_lsmap, "error": err_lsmap if not ok_lsmap else "", "ok": ok_lsmap,
+    })
+
+    if not ok_lsmap:
+        return jsonify({
+            "ok": False,
+            "error": f"Step A failed: {err_lsmap or out_lsmap or 'lsmap failed'}",
+            "steps": steps,
+        }), 400
+
+    # Parse: find vfchostX whose clntid matches client_lpar_id
+    vhost_name = None
+    for line in out_lsmap.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        vfchost_col = parts[0].strip()
+        clntid_col  = parts[2].strip()
+        if clntid_col == client_lpar_id and _re.match(r'^vfchost\d+$', vfchost_col, _re.IGNORECASE):
+            vhost_name = vfchost_col
+            break
+
+    if not vhost_name:
+        steps[-1]["error"] = f"No vfchostX found in lsmap output matching clntid={client_lpar_id}"
+        return jsonify({
+            "ok": False,
+            "error": f"Could not find vfchostX for client LPAR id {client_lpar_id} in lsmap output.",
+            "steps": steps,
+        }), 400
+
+    steps[-1]["note"] = f"Found vhost: {vhost_name}"
+
+    # ── Step B: vfcmap -vadapter <vhost> -remove ──────────────────────────
+    cmd_remove = (
+        f'viosvrcmd -m {managed_system} -p "{vios_name}" '
+        f'-c "vfcmap -vadapter {vhost_name} -remove"'
+    )
+    r_remove = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd_remove,
+    )
+    ok_remove  = r_remove.get("ok", False)
+    out_remove = (r_remove.get("output") or "").strip()
+    err_remove = (r_remove.get("error") or r_remove.get("stderr") or "").strip()
+
+    steps.append({
+        "step": "B", "label": f"Remove vfchost mapping (vfcmap -remove)",
+        "command": cmd_remove,
+        "output": out_remove or "(no output — success)" if ok_remove else out_remove,
+        "error": err_remove if not ok_remove else "", "ok": ok_remove,
+    })
+
+    if not ok_remove:
+        return jsonify({
+            "ok": False,
+            "error": f"Step B failed: {err_remove or out_remove or 'vfcmap -remove failed'}",
+            "vhost": vhost_name, "steps": steps,
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "message": f"VFC mapping removed: {vhost_name} on VIOS {vios_name}.",
+        "vhost": vhost_name,
+        "steps": steps,
+    })
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-map/delete", methods=["POST"])
+def delete_vfc_map(hmc_id):
+    """Delete a VFC mapping: chhwres -o r (remove server-side vfchost adapter).
+    Body: {managed_system, vios_name, vios_slot}
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    vios_name      = (data.get("vios_name") or "").strip()
+    vios_slot      = str(data.get("vios_slot") or "").strip()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system), ("vios_name", vios_name), ("vios_slot", vios_slot)
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    cmd = (
+        f'chhwres -r virtualio -m "{managed_system}" -o r '
+        f'-p "{vios_name}" --rsubtype fc -s {vios_slot}'
+    )
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+    ok  = result.get("ok", False)
+    out = (result.get("output") or "").strip()
+    err = (result.get("error") or result.get("stderr") or "").strip()
+    if ok:
+        return jsonify({"ok": True, "message": out or "VFC mapping removed successfully.", "command": cmd})
+    return jsonify({"ok": False, "error": err or out or "chhwres failed", "command": cmd}), 400
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-adapter/create", methods=["POST"])
+def create_vfc_adapter(hmc_id):
+    """Create a virtual FC adapter on an LPAR (client side): chhwres -o a --rsubtype fc.
+    Body: {managed_system, lpar_name, slot_num, adapter_type (client|server)}
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    lpar_name      = (data.get("lpar_name") or "").strip()
+    slot_num       = str(data.get("slot_num") or "").strip()
+    adapter_type   = (data.get("adapter_type") or "client").strip()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system), ("lpar_name", lpar_name), ("slot_num", slot_num)
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    cmd = (
+        f'chhwres -r virtualio -m "{managed_system}" -o a '
+        f'-p "{lpar_name}" --rsubtype fc -s {slot_num} '
+        f'-a "adapter_type={adapter_type}"'
+    )
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+    ok  = result.get("ok", False)
+    out = (result.get("output") or "").strip()
+    err = (result.get("error") or result.get("stderr") or "").strip()
+    if ok:
+        return jsonify({"ok": True, "message": out or "Virtual FC adapter created.", "command": cmd})
+    return jsonify({"ok": False, "error": err or out or "chhwres failed", "command": cmd}), 400
+
+
+@app.route("/api/hmcs/<hmc_id>/vfc-adapter/delete", methods=["POST"])
+def delete_vfc_adapter(hmc_id):
+    """Delete a virtual FC adapter from an LPAR: chhwres -o r --rsubtype fc.
+    Body: {managed_system, lpar_name, slot_num}
+    """
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return jsonify({"ok": False, "error": "HMC not found"}), 404
+    data = request.get_json(force=True) or {}
+    managed_system = (data.get("managed_system") or "").strip()
+    lpar_name      = (data.get("lpar_name") or "").strip()
+    slot_num       = str(data.get("slot_num") or "").strip()
+
+    missing = [k for k, v in [
+        ("managed_system", managed_system), ("lpar_name", lpar_name), ("slot_num", slot_num)
+    ] if not v]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing: {', '.join(missing)}"}), 400
+
+    cmd = (
+        f'chhwres -r virtualio -m "{managed_system}" -o r '
+        f'-p "{lpar_name}" --rsubtype fc -s {slot_num}'
+    )
+    result = ssh_manager.run_hmc_command(
+        host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        command=cmd,
+    )
+    ok  = result.get("ok", False)
+    out = (result.get("output") or "").strip()
+    err = (result.get("error") or result.get("stderr") or "").strip()
+    if ok:
+        return jsonify({"ok": True, "message": out or "Virtual FC adapter deleted.", "command": cmd})
+    return jsonify({"ok": False, "error": err or out or "chhwres failed", "command": cmd}), 400
+
+
+@app.route("/api/san/switches/<switch_id>/alias", methods=["POST"])
+def create_san_alias(switch_id):
+    """Create a new alias on the switch.
+    Body: {name: str, members: [wwpn, ...]}
+    """
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    members = [m.strip() for m in (data.get("members") or []) if m.strip()]
+    if not name:
+        return jsonify({"ok": False, "error": "Alias name is required"}), 400
+    if not members:
+        return jsonify({"ok": False, "error": "At least one WWPN member is required"}), 400
+    result = san_manager.create_alias(sw, name, members)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/san/switches/<switch_id>/zone", methods=["POST"])
+def create_san_zone(switch_id):
+    """Create a new zone on the switch.
+    Body: {name: str, members: [alias_or_wwpn, ...]}
+    """
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    members = [m.strip() for m in (data.get("members") or []) if m.strip()]
+    if not name:
+        return jsonify({"ok": False, "error": "Zone name is required"}), 400
+    if not members:
+        return jsonify({"ok": False, "error": "At least one member is required"}), 400
+    result = san_manager.create_zone(sw, name, members)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/san/switches/<switch_id>/zoneset/add-zones", methods=["POST"])
+def add_zones_to_zoneset(switch_id):
+    """Add zones to an existing or new zoneset.
+    Body: {zoneset: str, zones: [zone_name, ...]}
+    """
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    data = request.get_json(force=True) or {}
+    zoneset = (data.get("zoneset") or "").strip()
+    zones = [z.strip() for z in (data.get("zones") or []) if z.strip()]
+    if not zoneset:
+        return jsonify({"ok": False, "error": "Zoneset name is required"}), 400
+    if not zones:
+        return jsonify({"ok": False, "error": "At least one zone is required"}), 400
+    result = san_manager.add_zone_to_zoneset(sw, zoneset, zones)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/san/switches/<switch_id>/alias/<path:alias_name>", methods=["DELETE"])
+def delete_san_alias(switch_id, alias_name):
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    result = san_manager.delete_alias(sw, alias_name)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/san/switches/<switch_id>/zone/<path:zone_name>", methods=["DELETE"])
+def delete_san_zone(switch_id, zone_name):
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    result = san_manager.delete_zone(sw, zone_name)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/san/switches/<switch_id>/zoneset/activate", methods=["POST"])
+def activate_san_zoneset(switch_id):
+    """Activate (enable) a zoneset / cfg.
+    Body: {zoneset: str}
+    """
+    sw = san_store.get(switch_id)
+    if not sw:
+        return jsonify({"ok": False, "error": "Switch not found"}), 404
+    data = request.get_json(force=True) or {}
+    zoneset = (data.get("zoneset") or "").strip()
+    if not zoneset:
+        return jsonify({"ok": False, "error": "Zoneset name is required"}), 400
+    result = san_manager.activate_zoneset(sw, zoneset)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 

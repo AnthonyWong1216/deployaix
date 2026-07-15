@@ -100,11 +100,33 @@ class SSHManager:
 
     def run_hmc_command(self, host, port=22, username="hscroot",
                         key_path=None, password=None,
-                        command="") -> dict:
-        """Run a single command over its own SSH connection."""
+                        command="", stdin_input=None) -> dict:
+        """Run a single command over its own SSH connection.
+
+        stdin_input: optional string to write to the command's stdin.
+                     For interactive prompts (e.g. Brocade cfgsave asking 'yes/no'),
+                     we wait briefly for the prompt to appear then send the answer.
+        """
         try:
             client = self._connect(host, port, username, key_path, password)
-            _, stdout, stderr = client.exec_command(command, timeout=15)
+            stdin, stdout, stderr = client.exec_command(command, timeout=60)
+
+            if stdin_input is not None:
+                # Give the remote command time to print its prompt before we answer.
+                # select.select() does not work on Windows for non-socket fds,
+                # so we use a simple polling loop with recv_ready().
+                answer = stdin_input if stdin_input.endswith("\n") else stdin_input + "\n"
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    if stdout.channel.recv_ready():
+                        break
+                    if stdout.channel.exit_status_ready():
+                        break
+                    time.sleep(0.2)
+                stdin.write(answer)
+                stdin.flush()
+                stdin.channel.shutdown_write()
+
             out = stdout.read().decode("utf-8", errors="replace").strip()
             err = stderr.read().decode("utf-8", errors="replace").strip()
             exit_status = stdout.channel.recv_exit_status()
@@ -122,7 +144,7 @@ class SSHManager:
                                commands: dict = None) -> dict:
         """Run multiple commands over a SINGLE SSH connection.
 
-        ``commands`` is an ordered dict of  {key: cmd_string}.
+        ``commands`` is an ordered dict of  {key: cmd_string_or_(cmd, stdin)}.
         Returns {key: {"ok": bool, "output": str, "error": str}}.
         Opens one connection, executes each command sequentially,
         closes the connection once at the end.
@@ -140,9 +162,25 @@ class SSHManager:
             err = str(exc)
             return {k: {"ok": False, "output": "", "error": err} for k in commands}
 
-        for key, cmd in commands.items():
+        for key, spec in commands.items():
+            # Support (cmd, stdin_input) tuples
+            if isinstance(spec, tuple):
+                cmd, stdin_val = spec
+            else:
+                cmd, stdin_val = spec, None
             try:
-                _, stdout, stderr = client.exec_command(cmd, timeout=20)
+                stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
+                if stdin_val is not None:
+                    answer = stdin_val if stdin_val.endswith("\n") else stdin_val + "\n"
+                    # Poll briefly for prompt before answering
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        if stdout.channel.recv_ready() or stdout.channel.exit_status_ready():
+                            break
+                        time.sleep(0.2)
+                    stdin.write(answer)
+                    stdin.flush()
+                    stdin.channel.shutdown_write()
                 out = stdout.read().decode("utf-8", errors="replace").strip()
                 err = stderr.read().decode("utf-8", errors="replace").strip()
                 exit_status = stdout.channel.recv_exit_status()

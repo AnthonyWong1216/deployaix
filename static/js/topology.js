@@ -754,9 +754,12 @@
     // ---- Client LPAR nodes (right column) ----
     const clientNames = [];
     clientRows.forEach((r) => { if (r.lpar_name && clientNames.indexOf(r.lpar_name) < 0) clientNames.push(r.lpar_name); });
-    // Also pick up client names discovered from lsmap
+    // Also pick up client names discovered from lsmap.
+    // Trim clntname to guard against space-only values (e.g. " " returned for
+    // NOT_LOGGED_IN entries) which are truthy in JS but represent no client.
     Object.keys(lsmap).forEach((v) => (lsmap[v] || []).forEach((m) => {
-      if (m.clntname && clientNames.indexOf(m.clntname) < 0) clientNames.push(m.clntname);
+      const cname = (m.clntname || "").trim();
+      if (cname && clientNames.indexOf(cname) < 0) clientNames.push(cname);
     }));
 
     const clientIdOf = {};

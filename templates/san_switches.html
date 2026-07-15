@@ -13,11 +13,11 @@
   <table class="data-table" id="switch-table">
     <thead>
       <tr>
-        <th>Name</th><th>Host</th><th>Vendor</th><th>User</th><th>Port</th><th>Actions</th>
+        <th>Name</th><th>Host</th><th>Vendor</th><th>User</th><th>Port</th><th>Connected</th><th>Actions</th>
       </tr>
     </thead>
     <tbody id="switch-tbody">
-      <tr><td colspan="6" class="muted center">No switches registered</td></tr>
+      <tr><td colspan="7" class="muted center">No switches registered</td></tr>
     </tbody>
   </table>
 </div>
@@ -77,10 +77,10 @@
 <script>
 async function loadSwitches() {
   const tbody = document.getElementById("switch-tbody");
-  tbody.innerHTML = '<tr><td colspan="6" class="muted center">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" class="muted center">Loading…</td></tr>';
   const data = await fetch("/api/san/switches").then(r => r.json());
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted center">No switches registered</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="muted center">No switches registered</td></tr>';
     return;
   }
   tbody.innerHTML = data.map(s => `
@@ -90,12 +90,33 @@ async function loadSwitches() {
       <td><span class="badge badge-blue">${esc(s.vendor)}</span></td>
       <td class="muted">${esc(s.username)}</td>
       <td class="muted">${esc(String(s.ssh_port))}</td>
+      <td id="conn-${s.id}" class="muted center">
+        <span class="conn-checking" title="Checking…">⋯</span>
+      </td>
       <td class="action-cell">
         <button class="btn btn-xs btn-secondary" onclick="testSwitch('${s.id}')">Test</button>
         <a class="btn btn-xs btn-primary" href="/zoning?switch=${s.id}">Zoning</a>
         <button class="btn btn-xs btn-red" onclick="deleteSwitch('${s.id}','${esc(s.name)}')">Delete</button>
       </td>
     </tr>`).join("");
+
+  // Auto-check connectivity for every switch
+  data.forEach(s => checkConnection(s.id));
+}
+
+async function checkConnection(id) {
+  const cell = document.getElementById("conn-" + id);
+  if (!cell) return;
+  try {
+    const d = await fetch(`/api/san/switches/${id}/test`, { method: "POST" }).then(r => r.json());
+    if (d.ok) {
+      cell.innerHTML = '<span class="conn-ok" title="' + esc(d.version || "Connected") + '">✔ ok</span>';
+    } else {
+      cell.innerHTML = '<span class="conn-fail" title="' + esc(d.error || "Failed") + '">✘</span>';
+    }
+  } catch (e) {
+    cell.innerHTML = '<span class="conn-fail" title="Request error">✘</span>';
+  }
 }
 
 function esc(s) { return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -138,9 +159,16 @@ async function saveSwitch() {
 
 async function testSwitch(id) {
   showToast("Testing connection…", "info");
+  const cell = document.getElementById("conn-" + id);
+  if (cell) cell.innerHTML = '<span class="conn-checking" title="Checking…">⋯</span>';
   const d = await fetch(`/api/san/switches/${id}/test`, { method:"POST" }).then(r => r.json());
-  if (d.ok) showToast("✓ Connected: " + (d.version || "ok"), "success");
-  else showToast("✗ " + (d.error || "Connection failed"), "error");
+  if (d.ok) {
+    showToast("✓ Connected: " + (d.version || "ok"), "success");
+    if (cell) cell.innerHTML = '<span class="conn-ok" title="' + esc(d.version || "Connected") + '">✔ ok</span>';
+  } else {
+    showToast("✗ " + (d.error || "Connection failed"), "error");
+    if (cell) cell.innerHTML = '<span class="conn-fail" title="' + esc(d.error || "Failed") + '">✘</span>';
+  }
 }
 
 async function deleteSwitch(id, name) {
