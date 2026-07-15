@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Console — {{ lpar_name }}</title>
+  <!-- xterm.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <!-- Socket.IO v4 — must match Flask-SocketIO 5.x -->
+  <script src="https://cdn.jsdelivr.net/npm/socket.io@4.7.5/client-dist/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d0d0d;
+      color: #d4d4d4;
+      font-family: -apple-system, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header bar ── */
+    #console-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: #111;
+      border-bottom: 1px solid #333;
+      flex-shrink: 0;
+      gap: 12px;
+      min-height: 44px;
+    }
+
+    #console-title {
+      font-family: monospace;
+      font-size: 13px;
+      color: #ccc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    #console-status {
+      font-size: 12px;
+      padding: 2px 10px;
+      border-radius: 10px;
+      background: #222;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .st-connecting { color: #f0a500; }
+    .st-connected  { color: #3fb950; }
+    .st-error      { color: #f85149; }
+    .st-closed     { color: #8b949e; }
+
+    #close-btn {
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #ccc;
+      cursor: pointer;
+      padding: 4px 12px;
+      font-size: 12px;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    #close-btn:hover { background: #c0392b; border-color: #c0392b; color: #fff; }
+
+    /* ── Error banner ── */
+    #error-banner {
+      display: none;
+      padding: 10px 14px;
+      background: #2d1616;
+      border-bottom: 1px solid #c0392b;
+      color: #f85149;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      flex-shrink: 0;
+    }
+
+    /* ── Terminal area ── */
+    #terminal-wrap {
+      flex: 1;
+      min-height: 0;
+      padding: 4px;
+      background: #000;
+      overflow: hidden;
+    }
+
+    #terminal {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Make xterm fill the wrapper */
+    .xterm, .xterm-viewport, .xterm-screen {
+      height: 100% !important;
+    }
+  </style>
+</head>
+<body>
+
+<div id="console-header">
+  <span id="console-title">&#128196; Console — {{ lpar_name }} &nbsp;[{{ system_id }}]</span>
+  <span id="console-status" class="st-connecting">⏳ Connecting…</span>
+  <button id="close-btn" onclick="cleanClose()">✕ Close</button>
+</div>
+
+<div id="error-banner"></div>
+
+<div id="terminal-wrap">
+  <div id="terminal"></div>
+</div>
+
+<script>
+// ── Parameters injected by Flask ──────────────────────────
+const HMC_ID    = {{ hmc_id    | tojson }};
+const SYSTEM_ID = {{ system_id | tojson }};
+const LPAR_NAME = {{ lpar_name | tojson }};
+
+// ── DOM refs ──────────────────────────────────────────────
+const statusEl = document.getElementById("console-status");
+const errorEl  = document.getElementById("error-banner");
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className   = cls || "";
+}
+function showError(msg) {
+  errorEl.textContent  = msg;
+  errorEl.style.display = msg ? "block" : "none";
+}
+
+// ── Initialise xterm.js ───────────────────────────────────
+const term = new Terminal({
+  cursorBlink: true,
+  fontFamily:  "Menlo, 'Courier New', monospace",
+  fontSize:    14,
+  theme: {
+    background: "#000000",
+    foreground: "#d4d4d4",
+    cursor:     "#f0f0f0",
+  },
+  scrollback: 5000,
+  convertEol:  true,
+});
+
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById("terminal"));
+
+// Fit after a short delay to allow layout to settle
+setTimeout(() => { try { fitAddon.fit(); } catch(e) {} }, 80);
+
+// Re-fit on window resize
+window.addEventListener("resize", () => {
+  try { fitAddon.fit(); } catch(e) {}
+  if (sock && sock.connected) {
+    sock.emit("vterm_resize", { cols: term.cols, rows: term.rows });
+  }
+});
+
+// ── Show immediate loading feedback ──────────────────────
+term.writeln("\x1b[33m[DeployAIX] Loading SSH connection to HMC…\x1b[0m");
+term.writeln(`\x1b[2m[LPAR: ${LPAR_NAME}  |  System: ${SYSTEM_ID}]\x1b[0m`);
+term.writeln("\x1b[2m[Please wait, establishing mkvterm session…]\x1b[0m");
+
+// ── Connect Socket.IO /console namespace ─────────────────
+// Use polling first — Werkzeug threading mode handles polling but
+// not raw WebSocket upgrades; Engine.IO upgrades automatically.
+const sock = io("/console", {
+  transports: ["polling", "websocket"],
+  upgrade: true,
+});
+
+sock.on("connect", () => {
+  setStatus("⏳ Authenticating…", "st-connecting");
+  sock.emit("vterm_open", {
+    hmc_id:    HMC_ID,
+    system_id: SYSTEM_ID,
+    lpar_name: LPAR_NAME,
+  });
+});
+
+sock.on("vterm_ready", (data) => {
+  setStatus("● Connected", "st-connected");
+  term.writeln(`\x1b[32m[DeployAIX] Connected to LPAR console: ${data.lpar_name}\x1b[0m`);
+  term.writeln("\x1b[2m[Tip: Ctrl+] then Enter exits the HMC vterm session]\x1b[0m");
+  try { fitAddon.fit(); } catch(e) {}
+  sock.emit("vterm_resize", { cols: term.cols, rows: term.rows });
+});
+
+sock.on("vterm_output", (data) => {
+  term.write(data.data);
+});
+
+sock.on("vterm_error", (data) => {
+  const msg = data.msg || "Unknown error";
+  setStatus("✗ Error", "st-error");
+  showError("⚠ " + msg);
+  term.writeln(`\r\n\x1b[31m[Console Error] ${msg}\x1b[0m`);
+});
+
+sock.on("disconnect", (reason) => {
+  setStatus("Disconnected", "st-closed");
+  term.writeln(`\r\n\x1b[33m[DeployAIX] Connection closed (${reason})\x1b[0m`);
+});
+
+sock.on("connect_error", (err) => {
+  setStatus("Connection failed", "st-error");
+  showError("WebSocket connection failed: " + err.message);
+});
+
+// ── Forward keystrokes to backend ────────────────────────
+term.onData((data) => {
+  if (sock && sock.connected) {
+    sock.emit("vterm_input", { data });
+  }
+});
+
+// ── Clean close (button or window close) ─────────────────
+function cleanClose() {
+  if (sock && sock.connected) {
+    sock.emit("vterm_close");
+    sock.disconnect();
+  }
+  window.close();
+}
+
+window.addEventListener("beforeunload", () => {
+  if (sock && sock.connected) {
+    sock.emit("vterm_close");
+    sock.disconnect();
+  }
+});
+</script>
+</body>
+</html>

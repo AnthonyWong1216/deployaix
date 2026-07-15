@@ -1,6 +1,111 @@
 {% extends "base.html" %}
 {% block title %}LPARs{% endblock %}
 {% block page_title %}Logical Partitions{% endblock %}
+
+{% block head_extra %}
+<!-- xterm.js — browser-side terminal emulator -->
+<link  rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<style>
+  /* ── Console Modal ────────────────────────────────────────── */
+  #console-modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.72);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  #console-modal-overlay.visible { display: flex; }
+
+  #console-modal {
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    width: min(96vw, 1050px);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+    overflow: hidden;
+  }
+
+  #console-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #111;
+    border-bottom: 1px solid #333;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  #console-modal-title {
+    font-family: monospace;
+    font-size: 14px;
+    color: #ddd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #console-modal-status {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #2a2a2a;
+    color: #aaa;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #console-modal-status.status-connecting { color: #f0a500; }
+  #console-modal-status.status-connected  { color: #3fb950; }
+  #console-modal-status.status-error      { color: #f85149; }
+  #console-modal-status.status-closed     { color: #8b949e; }
+
+  #console-close-btn {
+    background: none;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #aaa;
+    cursor: pointer;
+    padding: 3px 10px;
+    font-size: 13px;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+  }
+  #console-close-btn:hover { background: #c0392b; border-color: #c0392b; color: #fff; }
+
+  #console-error-banner {
+    display: none;
+    padding: 10px 16px;
+    background: #2d1616;
+    border-bottom: 1px solid #c0392b;
+    color: #f85149;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    flex-shrink: 0;
+  }
+
+  #console-terminal-wrap {
+    flex: 1;
+    min-height: 420px;
+    height: 520px;
+    padding: 6px;
+    background: #000;
+    overflow: hidden;
+  }
+  #console-terminal-wrap .xterm,
+  #console-terminal-wrap .xterm-viewport,
+  #console-terminal-wrap .xterm-screen { height: 100% !important; }
+  #console-terminal { width: 100%; height: 100%; }
+</style>
+{% endblock %}
+
 {% block content %}
 
 <!-- ── Toolbar ── -->
@@ -100,6 +205,21 @@
       <button class="btn btn-primary" id="lam-confirm-btn">Confirm</button>
     </div>
   </dv>
+</div>
+
+<!-- ═══════════════ LPAR CONSOLE MODAL ═══════════════ -->
+<div id="console-modal-overlay">
+  <div id="console-modal">
+    <div id="console-modal-header">
+      <span id="console-modal-title">LPAR Console</span>
+      <span id="console-modal-status" class="status-connecting">Connecting…</span>
+      <button id="console-close-btn" onclick="closeConsole()">✕ Close Console</button>
+  
+    <div id="console-error-banner"></div>
+    <div id="console-terminal-wrap">
+      <div id="console-terminal"></div>
+    </div>
+  </div>
 </div>
 
 {% endblock %}
@@ -212,6 +332,8 @@ async function loadLPARs() {
       <td class="action-cell">
         <button class="btn btn-xs btn-outline-icon" title="Details"
                 onclick="openDetail('${esc(p.id)}','${esc(p.name)}')">&#9432;</button>
+        <button class="btn btn-xs btn-purple" title="Open LPAR Console (mkvterm)"
+                onclick="openConsolePopup('${esc(p.name)}')">&#128196; Console</button>
         <button class="btn btn-xs btn-green"    onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','activate')">On</button>
         <button class="btn btn-xs btn-orange"   onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','softstop')">Stop</button>
         <button class="btn btn-xs btn-red"      onclick="confirmAction('${esc(p.id)}','${esc(p.name)}','shutdown')">Off</button>
@@ -715,6 +837,23 @@ async function immediateShutdown(lparId, name) {
 
 function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
 
+// ── openConsolePopup(lparName) ────────────────────────────
+// Opens the LPAR console in a dedicated popup window.
+// The popup loads /console/<hmc_id>/<system_id>/<lpar_name> which is a
+// self-contained page with xterm.js + Socket.IO — no modal/CSS issues.
+function openConsolePopup(lparName) {
+  const hmcId = localHMCId || window.activeHMCId;
+  const sysId = currentSystemId;
+  if (!hmcId) { showToast("Select an HMC first", "warn"); return; }
+  if (!sysId) { showToast("Select a managed system first", "warn"); return; }
+
+  const url = `/console/${encodeURIComponent(hmcId)}/${encodeURIComponent(sysId)}/${encodeURIComponent(lparName)}`;
+  const features = "width=1100,height=680,resizable=yes,scrollbars=no,status=no,toolbar=no,menubar=no";
+  const popup = window.open(url, `console_${lparName}`, features);
+  if (!popup) {
+    showToast("Popup blocked — please allow popups for this site", "warn");
+  }
+}
 
 function copyToClipboard(text) {
   const el = document.createElement('textarea');
@@ -741,6 +880,202 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("local-hmc-selector").value = localHMCId || "";
     if (localHMCId) loadSystems();
   });
+});
+
+// ═══════════════════════════════════════════════════════════
+// LPAR WebSSH Console  (xterm.js + Socket.IO /console)
+// ═══════════════════════════════════════════════════════════
+
+let _consoleSocket  = null;   // Socket.IO socket for /console namespace
+let _consoleTerm    = null;   // xterm.js Terminal instance
+let _consoleFitAddon = null;  // FitAddon for auto-resize
+let _consoleResizeObs = null; // ResizeObserver for the modal wrapper
+
+// ── UI helpers ────────────────────────────────────────────
+function _consoleSetStatus(text, cls) {
+  const el = document.getElementById("console-modal-status");
+  el.textContent = text;
+  el.className   = cls || "";
+}
+
+function _consoleShowError(msg) {
+  const el = document.getElementById("console-error-banner");
+  el.textContent = msg;
+  el.style.display = msg ? "block" : "none";
+}
+
+// ── openConsole(lparName) ─────────────────────────────────
+// Called when the "Console" button is clicked for an LPAR.
+function openConsole(lparName) {
+  const hmcId   = localHMCId || window.activeHMCId;
+  const sysId   = currentSystemId;
+  if (!hmcId) { showToast("Select an HMC first", "warn"); return; }
+  if (!sysId) { showToast("Select a managed system first", "warn"); return; }
+
+  // Close any stale session first
+  _destroyConsole();
+
+  // Show the modal
+  const overlay = document.getElementById("console-modal-overlay");
+  overlay.classList.add("visible");
+  document.getElementById("console-modal-title").textContent =
+    `Console — ${lparName}  [${sysId}]`;
+  _consoleSetStatus("Connecting…", "status-connecting");
+  _consoleShowError("");
+
+  // ── Initialise xterm.js ───────────────────────────────
+  const termEl = document.getElementById("console-terminal");
+  termEl.innerHTML = "";   // clear any previous instance
+
+  _consoleTerm = new Terminal({
+    cursorBlink:      true,
+    fontFamily:       "Menlo, 'Courier New', monospace",
+    fontSize:         14,
+    theme: {
+      background: "#000000",
+      foreground: "#d4d4d4",
+      cursor:     "#f0f0f0",
+    },
+    scrollback:       5000,
+    convertEol:       true,
+  });
+
+  _consoleFitAddon = new FitAddon.FitAddon();
+  _consoleTerm.loadAddon(_consoleFitAddon);
+  _consoleTerm.open(termEl);
+
+  // Initial fit — must happen after open()
+  setTimeout(() => {
+    try { _consoleFitAddon.fit(); } catch(e) { /* ignore */ }
+  }, 50);
+
+  // Show a loading indicator immediately so the user sees feedback
+  _consoleTerm.writeln(`\x1b[33m[DeployAIX] Loading SSH connection to HMC…\x1b[0m`);
+  _consoleTerm.writeln(`\x1b[2m[LPAR: ${lparName}  |  System: ${sysId}]\x1b[0m`);
+  _consoleTerm.writeln(`\x1b[2m[Please wait, establishing mkvterm session…]\x1b[0m`);
+
+  // Auto-resize the PTY when the modal container changes size
+  _consoleResizeObs = new ResizeObserver(() => {
+    try {
+      _consoleFitAddon.fit();
+      if (_consoleSocket && _consoleSocket.connected) {
+        _consoleSocket.emit("vterm_resize", {
+          cols: _consoleTerm.cols,
+          rows: _consoleTerm.rows,
+        });
+      }
+    } catch(e) { /* ignore */ }
+  });
+  _consoleResizeObs.observe(document.getElementById("console-terminal-wrap"));
+
+  // ── Connect to Flask-SocketIO /console namespace ──────
+  // Use polling + upgrade (default) — Werkzeug threading mode does not
+  // support raw WebSocket upgrades; Flask-SocketIO handles the transport
+  // negotiation via Engine.IO long-polling which works on all servers.
+  _consoleSocket = io("/console", {
+    transports: ["polling", "websocket"],
+    upgrade: true,
+  });
+
+  // ── Socket events ─────────────────────────────────────
+  _consoleSocket.on("connect", () => {
+    _consoleSetStatus("Authenticating…", "status-connecting");
+    _consoleSocket.emit("vterm_open", {
+      hmc_id:    hmcId,
+      system_id: sysId,
+      lpar_name: lparName,
+    });
+  });
+
+  _consoleSocket.on("vterm_ready", (data) => {
+    _consoleSetStatus("● Connected", "status-connected");
+    _consoleTerm.writeln(
+      `\x1b[32m[DeployAIX] Connected to LPAR console: ${data.lpar_name}\x1b[0m`
+    );
+    _consoleTerm.writeln(
+      `\x1b[2m[Tip: press Ctrl+] then Enter to exit the HMC vterm session]\x1b[0m`
+    );
+    // Re-fit and send initial terminal size to backend
+    try { _consoleFitAddon.fit(); } catch(e) { /* ignore */ }
+    _consoleSocket.emit("vterm_resize", {
+      cols: _consoleTerm.cols,
+      rows: _consoleTerm.rows,
+    });
+  });
+
+  _consoleSocket.on("vterm_output", (data) => {
+    if (_consoleTerm) _consoleTerm.write(data.data);
+  });
+
+  _consoleSocket.on("vterm_error", (data) => {
+    const msg = data.msg || "Unknown error";
+    _consoleSetStatus("Error", "status-error");
+    _consoleShowError("⚠ " + msg);
+    if (_consoleTerm) {
+      _consoleTerm.writeln(`\r\n\x1b[31m[Console Error] ${msg}\x1b[0m`);
+    }
+  });
+
+  _consoleSocket.on("disconnect", (reason) => {
+    _consoleSetStatus("Disconnected", "status-closed");
+    if (_consoleTerm) {
+      _consoleTerm.writeln(
+        `\r\n\x1b[33m[DeployAIX] Connection closed (${reason})\x1b[0m`
+      );
+    }
+  });
+
+  _consoleSocket.on("connect_error", (err) => {
+    _consoleSetStatus("Connection failed", "status-error");
+    _consoleShowError("WebSocket connection failed: " + err.message);
+  });
+
+  // ── Forward keystrokes → backend ──────────────────────
+  _consoleTerm.onData((data) => {
+    if (_consoleSocket && _consoleSocket.connected) {
+      _consoleSocket.emit("vterm_input", { data });
+    }
+  });
+}
+
+// ── closeConsole() — called by the Close button ───────────
+function closeConsole() {
+  if (_consoleSocket && _consoleSocket.connected) {
+    _consoleSocket.emit("vterm_close");
+    _consoleSocket.disconnect();
+  }
+  _destroyConsole();
+  document.getElementById("console-modal-overlay").classList.remove("visible");
+}
+
+// ── _destroyConsole() — tear-down helper ──────────────────
+function _destroyConsole() {
+  if (_consoleResizeObs) {
+    _consoleResizeObs.disconnect();
+    _consoleResizeObs = null;
+  }
+  if (_consoleTerm) {
+    try { _consoleTerm.dispose(); } catch(e) { /* ignore */ }
+    _consoleTerm = null;
+  }
+  _consoleFitAddon = null;
+  if (_consoleSocket) {
+    try { _consoleSocket.disconnect(); } catch(e) { /* ignore */ }
+    _consoleSocket = null;
+  }
+}
+
+// ── Close modal when clicking outside it ─────────────────
+document.getElementById("console-modal-overlay").addEventListener("click", function(e) {
+  if (e.target === this) closeConsole();
+});
+
+// ── Keyboard: Escape closes console ───────────────────────
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape" &&
+      document.getElementById("console-modal-overlay").classList.contains("visible")) {
+    closeConsole();
+  }
 });
 </script>
 {% endblock %}

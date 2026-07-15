@@ -47,6 +47,20 @@ def connect_page():
 def lpars_page():
     return render_template("lpars.html")
 
+
+@app.route("/console/<hmc_id>/<system_id>/<lpar_name>")
+def console_page(hmc_id, system_id, lpar_name):
+    """Standalone popup page for the LPAR vterm console."""
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        return "HMC not found", 404
+    return render_template(
+        "console.html",
+        hmc_id=hmc_id,
+        system_id=system_id,
+        lpar_name=lpar_name,
+    )
+
 @app.route("/topology")
 def topology_page():
     return render_template("topology.html")
@@ -2498,6 +2512,104 @@ def handle_ssh_disconnect(data=None):
 @socketio.on("disconnect")
 def handle_disconnect():
     ssh_manager.close_shell(request.sid)
+
+
+# ──────────────────────────────────────────────────────────
+# WebSocket LPAR vterm console  (namespace /console)
+# ──────────────────────────────────────────────────────────
+#
+# Flow:
+#   1. Browser connects to /console namespace.
+#   2. Browser emits "vterm_open" with {hmc_id, system_id, lpar_name}.
+#   3. Backend calls SSHManager.open_vterm() which SSHs to the HMC and
+#      runs:  mkvterm -m "<system_id>" -p "<lpar_name>"
+#   4. A background thread in SSHManager reads the channel and emits
+#      "vterm_output" events back to the browser.
+#   5. Browser emits "vterm_input" with {data: "<keystrokes>"}.
+#   6. On modal close / browser disconnect, "vterm_close" is emitted and
+#      the backend tears down the SSH channel (releasing the HMC vterm lock).
+# ──────────────────────────────────────────────────────────
+
+@socketio.on("vterm_open", namespace="/console")
+def handle_vterm_open(data):
+    """Connect to the HMC and start the mkvterm session for the given LPAR."""
+    hmc_id     = data.get("hmc_id")
+    system_id  = data.get("system_id", "")
+    lpar_name  = data.get("lpar_name", "")
+
+    hmc = hmc_store.get(hmc_id)
+    if not hmc:
+        emit("vterm_error", {"msg": "HMC not found"}, namespace="/console")
+        return
+    if not system_id or not lpar_name:
+        emit("vterm_error", {"msg": "system_id and lpar_name are required"},
+             namespace="/console")
+        return
+
+    sid = request.sid
+
+    def _emit_output(text):
+        """Called from the SSHManager read-thread; forward terminal bytes to browser."""
+        socketio.emit("vterm_output", {"data": text}, to=sid, namespace="/console")
+
+    result = ssh_manager.open_vterm(
+        sid=sid,
+        host=hmc["host"],
+        port=int(hmc.get("ssh_port", 22)),
+        username=hmc.get("username", "hscroot"),
+        key_path=hmc.get("key_path") or None,
+        managed_system=system_id,
+        lpar_name=lpar_name,
+        emit_fn=_emit_output,
+    )
+
+    if result.get("ok"):
+        logger.info("vterm opened for LPAR %s on %s (sid=%s)", lpar_name, system_id, sid)
+        emit("vterm_ready", {"lpar_name": lpar_name, "system_id": system_id},
+             namespace="/console")
+    else:
+        err_msg = result.get("error", "Failed to open vterm")
+        logger.warning("vterm open failed for %s: %s", lpar_name, err_msg)
+        # Detect the common "vterm already open" error from the HMC.
+        if "already" in err_msg.lower() or "locked" in err_msg.lower() or "in use" in err_msg.lower():
+            err_msg = (
+                f"The vterm for LPAR '{lpar_name}' is already open (or locked) on the HMC. "
+                "Close the existing vterm session on the HMC first:\n"
+                f"  rmvterm -m \"{system_id}\" -p \"{lpar_name}\"\n"
+                "Then try again."
+            )
+        emit("vterm_error", {"msg": err_msg}, namespace="/console")
+
+
+@socketio.on("vterm_input", namespace="/console")
+def handle_vterm_input(data):
+    """Forward keystrokes from the browser terminal to the HMC SSH channel."""
+    ssh_manager.send_input(request.sid, data.get("data", ""))
+
+
+@socketio.on("vterm_resize", namespace="/console")
+def handle_vterm_resize(data):
+    """Propagate terminal resize (cols x rows) to the PTY on the HMC."""
+    try:
+        cols = int(data.get("cols", 80))
+        rows = int(data.get("rows", 24))
+    except (TypeError, ValueError):
+        return
+    ssh_manager.resize_vterm(request.sid, cols, rows)
+
+
+@socketio.on("vterm_close", namespace="/console")
+def handle_vterm_close(data=None):
+    """Explicit close from the browser (modal close button)."""
+    ssh_manager.close_shell(request.sid)
+    logger.info("vterm closed by client (sid=%s)", request.sid)
+
+
+@socketio.on("disconnect", namespace="/console")
+def handle_vterm_disconnect():
+    """Browser disconnected (tab closed, network drop, etc.) — clean up SSH."""
+    ssh_manager.close_shell(request.sid)
+    logger.info("vterm disconnect cleanup (sid=%s)", request.sid)
 
 
 # ──────────────────────────────────────────────────────────

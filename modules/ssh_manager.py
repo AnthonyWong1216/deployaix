@@ -416,3 +416,82 @@ class SSHManager:
                 shell["client"].close()
             except Exception:
                 pass
+
+    # ──────────────────────────────────────────────────────
+    # LPAR vterm console (mkvterm)
+    # ──────────────────────────────────────────────────────
+
+    def open_vterm(self, sid, host, port=22, username="hscroot",
+                   key_path=None, password=None,
+                   managed_system="", lpar_name="",
+                   emit_fn=None) -> dict:
+        """Open an SSH connection to the HMC and run mkvterm for a specific LPAR.
+
+        The mkvterm command opens a virtual terminal (vterm) session directly to
+        the LPAR's console.  We request a PTY so that the HMC allocates a
+        pseudo-terminal, then exec the command (not invoke_shell) so that when
+        the channel closes the HMC automatically frees the vterm lock.
+
+        Parameters
+        ----------
+        sid            : unique session id (Flask-SocketIO session id)
+        emit_fn        : callable(data:str) – called with raw terminal bytes
+        managed_system : HMC managed system name (e.g. "Server-9080-M9S-XXXXXXX")
+        lpar_name      : LPAR name (e.g. "AIX01")
+        """
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            connect_kwargs = dict(
+                hostname=host, port=port, username=username, timeout=15
+            )
+            if key_path:
+                connect_kwargs["key_filename"] = os.path.expanduser(key_path)
+            elif password:
+                connect_kwargs["password"] = password
+                connect_kwargs["look_for_keys"] = False
+            else:
+                connect_kwargs["look_for_keys"] = True
+            client.connect(**connect_kwargs)
+
+            # Open a transport channel with a PTY so the HMC console is
+            # interactive (handles control sequences, resize, etc.).
+            transport = client.get_transport()
+            channel = transport.open_session()
+            channel.get_pty(term="xterm-256color", width=220, height=50)
+
+            cmd = f'mkvterm -m "{managed_system}" -p "{lpar_name}"'
+            channel.exec_command(cmd)
+
+            self._shells[sid] = {"client": client, "channel": channel,
+                                 "type": "vterm"}
+
+            # Start the background read loop
+            t = threading.Thread(
+                target=self._read_loop,
+                args=(sid, channel, emit_fn),
+                daemon=True,
+            )
+            t.start()
+            return {"ok": True, "command": cmd}
+        except paramiko.AuthenticationException:
+            try:
+                client.close()
+            except Exception:
+                pass
+            return {"ok": False, "error": "SSH authentication failed"}
+        except Exception as exc:
+            try:
+                client.close()
+            except Exception:
+                pass
+            return {"ok": False, "error": str(exc)}
+
+    def resize_vterm(self, sid, cols: int, rows: int):
+        """Send a terminal resize (SIGWINCH) to the SSH channel."""
+        shell = self._shells.get(sid)
+        if shell and not shell["channel"].closed:
+            try:
+                shell["channel"].resize_pty(width=cols, height=rows)
+            except Exception:
+                pass

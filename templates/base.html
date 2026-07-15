@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DeployAIX — {% block title %}HMC Manager{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+  {% block head_extra %}{% endblock %}
 </head>
 <body>
 
@@ -90,6 +91,8 @@
   </div>
 </main>
 
+<!-- Socket.IO v4 client — must match Flask-SocketIO 5.x which uses Socket.IO protocol v5/Engine.IO v4 -->
+<script src="https://cdn.jsdelivr.net/npm/socket.io@4.7.5/client-dist/socket.io.min.js"></script>
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
