@@ -1,10 +1,1053 @@
 {% extends "base.html" %}
-{% block title %}Storage{% endblock %}
-{% block page_title %}Storage{% endblock %}
+{% block title %}Storage — IBM FlashSystem{% endblock %}
+{% block page_title %}IBM Storage FlashSystem 5300{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* ── Section container ── */
+  .form-section-container {
+    background: #f8f9fa;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  /* ── Collapsible section header ── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 18px;
+    background: #f8f9fa;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 2px solid var(--accent);
+    transition: background .15s;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .section-header:hover { background: #eef0f3; }
+  .section-header::before {
+    content: "";
+    display: inline-block;
+    width: 4px; height: 16px;
+    background: var(--accent);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .section-header-title {
+    font-size: 0.85rem; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text); white-space: nowrap;
+  }
+  /* search input beside title */
+  .section-search {
+    flex: 1; min-width: 120px; max-width: 220px;
+    height: 28px; padding: 3px 8px; font-size: 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--text);
+    outline: none; transition: border-color .15s;
+  }
+  .section-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(44,95,204,.1); }
+  .section-search::placeholder { color: var(--muted); }
+
+  .section-header-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .section-chevron {
+    font-size: 12px; color: var(--muted);
+    transition: transform .2s; flex-shrink: 0;
+  }
+  .section-chevron.open { transform: rotate(180deg); }
+
+  /* ── Section body ── */
+  .section-body { display: none; padding: 18px 20px 20px; background: #fff; border-top: 1px solid var(--border); }
+  .section-body.open { display: block; }
+
+  /* ── Login panel ── */
+  #storage-login-panel { max-width: 500px; margin: 40px auto 0; }
+  .login-brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .login-brand-row svg { width: 36px; height: 36px; fill: var(--accent); flex-shrink: 0; }
+  .login-brand-text .product { font-size: 11px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+  .login-brand-text .model   { font-size: 1rem; font-weight: 700; color: var(--text); }
+
+  #storage-dashboard { display: none; }
+
+  /* Connection bar */
+  .conn-status-bar {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--green-bg); border: 1px solid #86efac;
+    border-radius: var(--radius); padding: 9px 16px;
+    margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .conn-status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .conn-status-text { font-size: 13px; color: var(--green); font-weight: 600; flex: 1; }
+
+  /* Tab nav */
+  .storage-tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 22px; }
+  .storage-tab {
+    padding: 9px 20px; font-size: 13px; cursor: pointer;
+    background: transparent; border: none; color: var(--muted);
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+    font-weight: 500; transition: color .15s, border-color .15s;
+  }
+  .storage-tab:hover  { color: var(--accent); }
+  .storage-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+  .storage-panel { display: none; }
+  .storage-panel.active { display: block; }
+
+  /* Form helpers */
+  .row      { display: flex; flex-wrap: wrap; gap: 12px; }
+  .col-md-6 { flex: 0 0 calc(50% - 6px); min-width: 180px; }
+  .col-12   { flex: 0 0 100%; }
+  .g-3      { gap: 12px; }
+
+  .form-label { font-weight: 600; margin-bottom: 5px; font-size: 0.82rem; color: var(--muted); display: block; }
+  .form-control, .form-select {
+    width: 100%; height: 36px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 5px 10px; font-size: 13px; background: var(--surface); color: var(--text);
+    transition: border-color .15s;
+  }
+  .form-control:focus, .form-select:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(44,95,204,.1); outline: none;
+  }
+  .form-select { appearance: none; cursor: pointer; }
+
+  .port-row { display: flex; gap: 8px; margin-bottom: 6px; align-items: center; }
+  .port-row .form-control { flex: 1; }
+  .btn-rm {
+    background: var(--red-bg); color: var(--red);
+    border: 1px solid #fca5a5; border-radius: 4px;
+    cursor: pointer; padding: 4px 10px; font-size: 12px; flex-shrink: 0;
+  }
+  .btn-rm:hover { background: #ffe0e0; }
+
+  .result-box { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin-top: 14px; display: none; }
+  .result-box.visible { display: block; }
+  .result-box.success { background: var(--green-bg); color: var(--green); border: 1px solid #86efac; }
+  .result-box.error   { background: var(--red-bg);   color: var(--red);   border: 1px solid #fca5a5; }
+
+  .spinner-sm {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid rgba(0,0,0,.15); border-top-color: currentColor;
+    border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* System info KV grid */
+  .sysinfo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 10px; }
+  .sysinfo-item { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 12px; }
+  .sysinfo-key  { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3px; }
+  .sysinfo-val  { font-size: 13px; font-weight: 600; color: var(--text); word-break: break-all; }
+
+  .login-error {
+    display: none; background: var(--red-bg); border: 1px solid #fca5a5;
+    color: var(--red); border-radius: var(--radius); padding: 10px 14px;
+    font-size: 13px; margin-bottom: 14px;
+  }
+
+  /* ── Clickable table rows ── */
+  .row-link td { cursor: pointer; }
+  .row-link:hover td { background: var(--blue-bg) !important; }
+  .row-link td:first-child { padding-left: 8px; }
+  .click-hint { font-size: 10px; color: var(--muted); margin-left: 4px; }
+
+  /* ── Detail drawer (slide-in from right) ── */
+  .drawer-overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:300;
+                    display:flex; justify-content:flex-end; }
+  .drawer-overlay.hidden { display:none; }
+  .drawer {
+    background: var(--surface); width: min(560px, 96vw); height:100%;
+    display:flex; flex-direction:column;
+    box-shadow: -4px 0 24px rgba(0,0,0,.18); overflow:hidden;
+  }
+  .drawer-header {
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:16px 20px 14px; border-bottom:1px solid var(--border); flex-shrink:0;
+  }
+  .drawer-title { font-size:15px; font-weight:700; }
+  .drawer-sub   { font-size:12px; color:var(--muted); margin-top:2px; }
+  .drawer-close {
+    background:none; border:none; cursor:pointer; font-size:18px;
+    color:var(--muted); padding:0 4px; line-height:1;
+  }
+  .drawer-close:hover { color:var(--text); }
+  .drawer-body  { padding:20px; overflow-y:auto; flex:1; }
+
+  /* No-result row */
+  .no-filter-match { display:none; }
+  .no-filter-match.visible { display:block; padding:8px 2px; font-size:12px; color:var(--muted); }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="card">
-  <div class="card-title">Storage Resources</div>
-  <p class="muted">Virtual Fibre Channel adapters, virtual SCSI, and storage mappings per LPAR.</p>
-  <div class="muted center">Coming soon — requires HMC REST API session.</div>
+<!-- LOGIN PANEL -->
+<div id="storage-login-panel">
+  <div class="card shadow-sm">
+    <div class="login-brand-row">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="16" cy="6" rx="13" ry="4"/>
+        <rect x="3" y="6" width="26" height="8" opacity=".75"/>
+        <ellipse cx="16" cy="14" rx="13" ry="4" opacity=".9"/>
+        <rect x="3" y="14" width="26" height="8" opacity=".6"/>
+        <ellipse cx="16" cy="22" rx="13" ry="4" opacity=".85"/>
+        <rect x="3" y="22" width="26" height="4" opacity=".5"/>
+        <ellipse cx="16" cy="26" rx="13" ry="4" opacity=".8"/>
+      </svg>
+      <div class="login-brand-text">
+        <div class="product">IBM Storage Virtualize</div>
+        <div class="model">FlashSystem 5300 — Connect</div>
+      </div>
+    </div>
+    <div id="login-error" class="login-error"></div>
+    <form id="storage-login-form" autocomplete="off">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Storage IP / Hostname <span class="req">*</span></label>
+          <input id="f-ip" class="form-control" type="text" placeholder="192.168.137.203" required />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Username <span class="req">*</span></label>
+          <input id="f-user" class="form-control" type="text" placeholder="superuser" required />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Password <span class="req">*</span></label>
+          <input id="f-pass" class="form-control" type="password" placeholder="••••••••" required />
+        </div>
+        <div class="col-12" style="padding-top:4px;">
+          <button type="submit" class="btn btn-primary" id="login-btn" style="padding:9px 32px;font-size:14px;">
+            Connect to Storage
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
 </div>
+
+<!-- DASHBOARD -->
+<div id="storage-dashboard">
+
+  <div class="conn-status-bar">
+    <span class="conn-status-dot"></span>
+    <span class="conn-status-text" id="conn-status-text">Connected</span>
+    <button class="btn btn-danger btn-sm" id="logout-btn" style="margin-left:auto;">Disconnect</button>
+  </div>
+
+  <div class="storage-tabs" role="tablist">
+    <button class="storage-tab active" data-tab="tab-sysinfo">&#9656; System Info</button>
+    <button class="storage-tab" data-tab="tab-addhost">&#65291; Add Host</button>
+    <button class="storage-tab" data-tab="tab-addvol">&#65291; Add Volume</button>
+    <button class="storage-tab" data-tab="tab-mapvol">&#8680; Map Volume</button>
+  </div>
+
+  <!-- ═══ TAB 1: System Info ═══ -->
+  <div id="tab-sysinfo" class="storage-panel active">
+
+    <!-- System Overview -->
+    <div class="form-section-container">
+      <div class="section-header" onclick="toggleSection('sec-overview')">
+        <span class="section-header-title">System Overview</span>
+        <input class="section-search" type="text" placeholder="&#128269; Filter…"
+               onclick="event.stopPropagation()"
+               oninput="filterSysinfoGrid(this.value)" />
+        <div class="section-header-actions">
+          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadSysinfo()">&#8635;</button>
+          <span class="section-chevron open" id="chev-sec-overview">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-overview">
+        <div id="sysinfo-loading" style="color:var(--muted);font-size:13px;"><span class="spinner-sm"></span>&nbsp; Loading…</div>
+        <div id="sysinfo-grid" class="sysinfo-grid" style="display:none;"></div>
+        <div id="sysinfo-no-match" class="no-filter-match">No matching properties.</div>
+      </div>
+    </div>
+
+    <!-- Defined Hosts -->
+    <div class="form-section-container">
+      <div class="section-header" onclick="toggleSection('sec-hosts')">
+        <span class="section-header-title">Defined Hosts</span>
+        <input class="section-search" type="text" placeholder="&#128269; Filter hosts…"
+               onclick="event.stopPropagation()"
+               oninput="filterTable('hosts-tbody', this.value, 'hosts-no-match')" />
+        <div class="section-header-actions">
+          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadHosts()">&#8635;</button>
+          <span class="section-chevron open" id="chev-sec-hosts">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-hosts">
+        <p style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+          Click a host row to view its mapped volumes.
+        </p>
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr><th>ID</th><th>Name</th><th>Ports</th><th>Type</th><th>Status</th></tr></thead>
+            <tbody id="hosts-tbody">
+              <tr><td colspan="5" class="muted center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="hosts-no-match" class="no-filter-match">No matching hosts.</div>
+      </div>
+    </div>
+
+    <!-- Volumes -->
+    <div class="form-section-container">
+      <div class="section-header" onclick="toggleSection('sec-vols')">
+        <span class="section-header-title">Volumes (VDisks)</span>
+        <input class="section-search" type="text" placeholder="&#128269; Filter volumes…"
+               onclick="event.stopPropagation()"
+               oninput="filterTable('vols-tbody', this.value, 'vols-no-match')" />
+        <div class="section-header-actions">
+          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadVolumes()">&#8635;</button>
+          <span class="section-chevron open" id="chev-sec-vols">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-vols">
+        <p style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+          Click a volume row to view its mapped hosts.
+        </p>
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr><th>ID</th><th>Name</th><th>Capacity</th><th>Pool</th><th>Status</th><th>Type</th></tr></thead>
+            <tbody id="vols-tbody">
+              <tr><td colspan="6" class="muted center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="vols-no-match" class="no-filter-match">No matching volumes.</div>
+      </div>
+    </div>
+
+    <!-- Mappings -->
+    <div class="form-section-container">
+      <div class="section-header" onclick="toggleSection('sec-maps')">
+        <span class="section-header-title">Host–Volume Mappings</span>
+        <input class="section-search" type="text" placeholder="&#128269; Filter mappings…"
+               onclick="event.stopPropagation()"
+               oninput="filterTable('maps-tbody', this.value, 'maps-no-match')" />
+        <div class="section-header-actions">
+          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadMappings()">&#8635;</button>
+          <span class="section-chevron open" id="chev-sec-maps">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-maps">
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr><th>Host</th><th>Volume</th><th>SCSI ID</th><th>LUN ID</th></tr></thead>
+            <tbody id="maps-tbody">
+              <tr><td colspan="4" class="muted center">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="maps-no-match" class="no-filter-match">No matching mappings.</div>
+      </div>
+    </div>
+
+  </div><!-- /tab-sysinfo -->
+
+  <!-- ═══ TAB 2: Add Host ═══ -->
+  <div id="tab-addhost" class="storage-panel">
+    <div class="form-section-container" style="max-width:640px;">
+      <div class="section-header" onclick="toggleSection('sec-addhost')">
+        <span class="section-header-title">Register New Host</span>
+        <div class="section-header-actions">
+          <span class="section-chevron open" id="chev-sec-addhost">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-addhost">
+        <form id="add-host-form" autocomplete="off">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Host Name <span class="req">*</span></label>
+              <input id="h-name" class="form-control" type="text" placeholder="e.g. AIX-PROD-01" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Host OS / Type</label>
+              <select id="h-type" class="form-select">
+                <option value="generic">Generic</option>
+                <option value="aix">IBM AIX</option>
+                <option value="windows">Windows</option>
+                <option value="linux">Linux</option>
+                <option value="esxi">VMware ESXi</option>
+                <option value="hpux">HP-UX</option>
+                <option value="solaris">Oracle Solaris</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label">FC WWPNs <small style="color:var(--muted);font-weight:400;">(colons optional)</small></label>
+              <div id="wwpn-list">
+                <div class="port-row">
+                  <input class="form-control wwpn-entry" type="text" placeholder="e.g. 500507680B23C456" spellcheck="false"/>
+                  <button type="button" class="btn-rm" onclick="rmPortRow(this)">&#10005;</button>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-xs" style="margin-top:6px;" onclick="addWwpnRow()">&#65291; Add WWPN</button>
+            </div>
+            <div class="col-12">
+              <label class="form-label">iSCSI IQNs</label>
+              <div id="iqn-list">
+                <div class="port-row">
+                  <input class="form-control iqn-entry" type="text" placeholder="e.g. iqn.2024-01.com.example:hostname" spellcheck="false"/>
+                  <button type="button" class="btn-rm" onclick="rmPortRow(this)">&#10005;</button>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-xs" style="margin-top:6px;" onclick="addIqnRow()">&#65291; Add IQN</button>
+            </div>
+            <div class="col-12">
+              <div id="addhost-result" class="result-box"></div>
+              <button type="submit" class="btn btn-primary" id="addhost-btn" style="margin-top:10px;padding:9px 28px;">Register Host</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ TAB 3: Add Volume ═══ -->
+  <div id="tab-addvol" class="storage-panel">
+    <div class="form-section-container" style="max-width:560px;">
+      <div class="section-header" onclick="toggleSection('sec-addvol')">
+        <span class="section-header-title">Create New Volume</span>
+        <div class="section-header-actions">
+          <span class="section-chevron open" id="chev-sec-addvol">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-addvol">
+        <form id="add-vol-form" autocomplete="off">
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">Volume Name <span class="req">*</span></label>
+              <input id="v-name" class="form-control" type="text" placeholder="e.g. AIX-PROD-VOL01" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Capacity (GB) <span class="req">*</span></label>
+              <input id="v-size" class="form-control" type="number" min="1" placeholder="e.g. 100" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Storage Pool <span class="req">*</span></label>
+              <input id="v-pool" class="form-control" type="text" placeholder="e.g. Pool0" list="pool-datalist" required />
+              <datalist id="pool-datalist"></datalist>
+            </div>
+            <div class="col-12">
+              <div id="addvol-result" class="result-box"></div>
+              <button type="submit" class="btn btn-primary" id="addvol-btn" style="margin-top:10px;padding:9px 28px;">Create Volume</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ TAB 4: Map Volume ═══ -->
+  <div id="tab-mapvol" class="storage-panel">
+    <div class="form-section-container" style="max-width:540px;">
+      <div class="section-header" onclick="toggleSection('sec-mapvol')">
+        <span class="section-header-title">Map Volume to Host</span>
+        <div class="section-header-actions">
+          <span class="section-chevron open" id="chev-sec-mapvol">&#9660;</span>
+        </div>
+      </div>
+      <div class="section-body open" id="sec-mapvol">
+        <form id="map-vol-form" autocomplete="off">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Select Host <span class="req">*</span></label>
+              <select id="m-host" class="form-select" required>
+                <option value="">— choose host —</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Select Volume <span class="req">*</span></label>
+              <select id="m-vol" class="form-select" required>
+                <option value="">— choose volume —</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <div id="mapvol-result" class="result-box"></div>
+              <button type="submit" class="btn btn-primary" id="mapvol-btn" style="margin-top:10px;padding:9px 28px;">Map Volume</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /storage-dashboard -->
+
+<!-- ═══════════════════════════════════════
+     DETAIL DRAWER (Host→Disks / Disk→Hosts)
+═══════════════════════════════════════ -->
+<div id="detail-drawer-overlay" class="drawer-overlay hidden" onclick="closeDrawer(event)">
+  <div class="drawer" onclick="event.stopPropagation()">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="drawer-title">Detail</div>
+        <div class="drawer-sub"  id="drawer-sub"></div>
+      </div>
+      <button class="drawer-close" onclick="closeDrawer()">&#10005;</button>
+    </div>
+    <div class="drawer-body" id="drawer-body">
+      <div class="muted center"><span class="spinner-sm"></span>&nbsp; Loading…</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ═══════════════════════════════════════════════════
+   Helpers
+═══════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function showResult(id, type, msg) {
+  const el=$(id); el.className=`result-box visible ${type}`; el.textContent=msg;
+}
+function hideResult(id) {
+  const el=$(id); if(el){el.className='result-box';el.textContent='';}
+}
+
+/* ── Collapse/Expand ── */
+function toggleSection(id) {
+  const body=$(id), chev=$('chev-'+id);
+  const open=body.classList.contains('open');
+  body.classList.toggle('open',!open);
+  if(chev) chev.classList.toggle('open',!open);
+}
+
+/* ── Tabs ── */
+document.querySelectorAll('.storage-tab').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.storage-tab').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.storage-panel').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    $(btn.dataset.tab).classList.add('active');
+    if(btn.dataset.tab==='tab-mapvol') populateMapDropdowns();
+  });
+});
+
+/* ═══════════════════════════════════════════════════
+   SEARCH / FILTER
+═══════════════════════════════════════════════════ */
+/* Filter table rows by text content */
+function filterTable(tbodyId, q, noMatchId) {
+  const tbody=$(tbodyId), noMatch=$(noMatchId);
+  const term=q.trim().toLowerCase();
+  let anyVisible=false;
+  Array.from(tbody.rows).forEach(tr=>{
+    const text=tr.textContent.toLowerCase();
+    const show = !term || text.includes(term);
+    tr.style.display = show ? '' : 'none';
+    if(show) anyVisible=true;
+  });
+  if(noMatch) noMatch.classList.toggle('visible', !anyVisible && !!term);
+}
+
+/* Filter sysinfo KV tiles */
+function filterSysinfoGrid(q) {
+  const grid=$('sysinfo-grid'), noMatch=$('sysinfo-no-match');
+  if(!grid) return;
+  const term=q.trim().toLowerCase();
+  let anyVisible=false;
+  Array.from(grid.children).forEach(item=>{
+    const text=item.textContent.toLowerCase();
+    const show = !term || text.includes(term);
+    item.style.display = show ? '' : 'none';
+    if(show) anyVisible=true;
+  });
+  if(noMatch) noMatch.classList.toggle('visible', !anyVisible && !!term);
+}
+
+/* ═══════════════════════════════════════════════════
+   LOGIN
+═══════════════════════════════════════════════════ */
+$('storage-login-form').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const btn=$('login-btn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Connecting…';
+  $('login-error').style.display='none';
+  const body={storage_ip:$('f-ip').value.trim(), username:$('f-user').value.trim(), password:$('f-pass').value};
+  try{
+    const r=await fetch('/api/storage/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok) onLoginSuccess(d);
+    else showLoginError(d.error||'Authentication failed.');
+  }catch(err){ showLoginError('Network error: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent='Connect to Storage'; }
+});
+
+function showLoginError(msg){
+  const el=$('login-error'); el.textContent=msg; el.style.display='block';
+}
+function onLoginSuccess(d){
+  $('storage-login-panel').style.display='none';
+  $('storage-dashboard').style.display='block';
+  $('conn-status-text').textContent=`Connected to ${d.storage_ip||'?'} as ${d.username||'?'}`;
+  loadAllData();
+}
+(async()=>{
+  try{
+    const r=await fetch('/api/storage/session'); const d=await r.json();
+    if(d.ok&&d.connected) onLoginSuccess({storage_ip:d.storage_ip,username:d.username});
+  }catch(_){}
+})();
+
+/* ═══════════════════════════════════════════════════
+   LOGOUT
+═══════════════════════════════════════════════════ */
+$('logout-btn').addEventListener('click',async()=>{
+  $('logout-btn').disabled=true;
+  try{await fetch('/api/storage/logout',{method:'POST'});}catch(_){}
+  $('storage-dashboard').style.display='none';
+  $('storage-login-panel').style.display='block';
+  $('logout-btn').disabled=false;
+  $('f-pass').value='';
+});
+
+/* ═══════════════════════════════════════════════════
+   DATA LOAD
+═══════════════════════════════════════════════════ */
+// cached data for drawer cross-reference
+let _allMappings=[];
+let _allHosts=[];
+let _allVols=[];
+
+function loadAllData(){ loadSysinfo(); loadHosts(); loadVolumes(); loadMappings(); loadPools(); }
+
+/* System info */
+async function loadSysinfo(){
+  $('sysinfo-loading').style.display='block';
+  $('sysinfo-grid').style.display='none';
+  try{
+    const r=await fetch('/api/storage/system'); const d=await r.json();
+    if(!d.ok){$('sysinfo-loading').textContent='Error: '+(d.error||'Unknown');return;}
+    const info=d.data;
+    const priority=[
+      ['name','System Name'],['id','System ID'],['product_name','Product'],
+      ['code_level','Code Level'],['total_mdisk_capacity','Total Capacity'],
+      ['virtual_disk_space','VDisk Space'],['used_capacity','Used Capacity'],
+      ['mdisk_grp_count','Pool Count'],['host_count','Host Count'],
+      ['vdisk_count','Volume Count'],['location','Location'],['time_zone','Time Zone'],
+    ];
+    const grid=$('sysinfo-grid'); grid.innerHTML='';
+    if(typeof info==='object'&&!Array.isArray(info)){
+      const done=new Set();
+      priority.forEach(([k,label])=>{
+        if(info[k]!==undefined&&info[k]!==''){
+          done.add(k);
+          const item=document.createElement('div'); item.className='sysinfo-item';
+          item.innerHTML=`<div class="sysinfo-key">${esc(label)}</div><div class="sysinfo-val">${esc(String(info[k]))}</div>`;
+          grid.appendChild(item);
+        }
+      });
+      Object.entries(info).forEach(([k,v])=>{
+        if(!done.has(k)&&v!==''&&v!==null&&v!==undefined){
+          const item=document.createElement('div'); item.className='sysinfo-item';
+          item.innerHTML=`<div class="sysinfo-key">${esc(k)}</div><div class="sysinfo-val">${esc(String(v))}</div>`;
+          grid.appendChild(item);
+        }
+      });
+    }
+    $('sysinfo-loading').style.display='none';
+    grid.style.display='grid';
+  }catch(err){$('sysinfo-loading').textContent='Failed: '+err.message;}
+}
+
+/* Hosts */
+async function loadHosts(){
+  const tbody=$('hosts-tbody');
+  tbody.innerHTML='<tr><td colspan="5" class="muted center"><span class="spinner-sm"></span></td></tr>';
+  try{
+    const r=await fetch('/api/storage/hosts'); const d=await r.json();
+    if(!d.ok){tbody.innerHTML=`<tr><td colspan="5" class="error-text">${esc(d.error)}</td></tr>`;return;}
+    const rows=Array.isArray(d.data)?d.data:[];
+    _allHosts=rows;
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="5" class="muted center">No hosts defined.</td></tr>';return;}
+    tbody.innerHTML=rows.map(h=>`
+      <tr class="row-link" onclick="showHostDetail('${esc(h.name||h.id)}')">
+        <td>${esc(h.id||'—')}</td>
+        <td><strong style="color:var(--accent);text-decoration:underline dotted;">${esc(h.name||'—')}</strong></td>
+        <td>${esc(h.port_count||h.num_wwns||'—')}</td>
+        <td><span class="badge badge-blue">${esc(h.type||h.host_type||'generic')}</span></td>
+        <td>${statusBadge(h.status||'online')}</td>
+      </tr>`).join('');
+  }catch(err){tbody.innerHTML=`<tr><td colspan="5" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
+}
+
+/* Volumes */
+async function loadVolumes(){
+  const tbody=$('vols-tbody');
+  tbody.innerHTML='<tr><td colspan="6" class="muted center"><span class="spinner-sm"></span></td></tr>';
+  try{
+    const r=await fetch('/api/storage/volumes'); const d=await r.json();
+    if(!d.ok){tbody.innerHTML=`<tr><td colspan="6" class="error-text">${esc(d.error)}</td></tr>`;return;}
+    const rows=Array.isArray(d.data)?d.data:[];
+    _allVols=rows;
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="6" class="muted center">No volumes.</td></tr>';return;}
+    tbody.innerHTML=rows.map(v=>`
+      <tr class="row-link" onclick="showVolDetail('${esc(v.name||v.id)}')">
+        <td>${esc(v.id||'—')}</td>
+        <td><strong style="color:var(--accent);text-decoration:underline dotted;">${esc(v.name||'—')}</strong></td>
+        <td>${esc(fmtCap(v.capacity||v.mdisk_cap||v.real_capacity||''))}</td>
+        <td>${esc(v.mdisk_grp_name||v.pool||'—')}</td>
+        <td>${statusBadge(v.status||'online')}</td>
+        <td><span class="badge badge-grey">${esc(v.type||'—')}</span></td>
+      </tr>`).join('');
+  }catch(err){tbody.innerHTML=`<tr><td colspan="6" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
+}
+
+/* Mappings */
+async function loadMappings(){
+  const tbody=$('maps-tbody');
+  tbody.innerHTML='<tr><td colspan="4" class="muted center"><span class="spinner-sm"></span></td></tr>';
+  try{
+    const r=await fetch('/api/storage/mappings'); const d=await r.json();
+    if(!d.ok){tbody.innerHTML=`<tr><td colspan="4" class="error-text">${esc(d.error)}</td></tr>`;return;}
+    const rows=Array.isArray(d.data)?d.data:[];
+    _allMappings=rows;
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="4" class="muted center">No mappings.</td></tr>';return;}
+    tbody.innerHTML=rows.map(m=>`
+      <tr>
+        <td>${esc(m.host_name||m.host||'—')}</td>
+        <td>${esc(m.vdisk_name||m.volume||'—')}</td>
+        <td>${esc(m.scsi_id||'—')}</td>
+        <td>${esc(m.lun_id||'—')}</td>
+      </tr>`).join('');
+  }catch(err){tbody.innerHTML=`<tr><td colspan="4" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
+}
+
+/* Pools */
+async function loadPools(){
+  try{
+    const r=await fetch('/api/storage/pools'); const d=await r.json();
+    if(!d.ok) return;
+    const rows=Array.isArray(d.data)?d.data:[];
+    const dl=$('pool-datalist');
+    dl.innerHTML=rows.map(p=>{const n=p.name||p.mdisk_grp_name||'';return n?`<option value="${esc(n)}">`:'';}).join('');
+  }catch(_){}
+}
+
+/* Map dropdowns */
+async function populateMapDropdowns(){
+  const hSel=$('m-host'),vSel=$('m-vol');
+  let hosts=[],vols=[];
+  try{const r=await fetch('/api/storage/hosts');const d=await r.json();if(d.ok)hosts=d.data||[];}catch(_){}
+  try{const r=await fetch('/api/storage/volumes');const d=await r.json();if(d.ok)vols=d.data||[];}catch(_){}
+  hSel.innerHTML='<option value="">— choose host —</option>'+
+    hosts.map(h=>`<option value="${esc(h.name||h.id)}">${esc(h.name||h.id)}</option>`).join('');
+  vSel.innerHTML='<option value="">— choose volume —</option>'+
+    vols.map(v=>`<option value="${esc(v.name||v.id)}">${esc(v.name||v.id)}${(v.capacity||v.mdisk_cap)?` (${fmtCap(v.capacity||v.mdisk_cap)})`:''}`)  .join('');
+}
+
+/* ═══════════════════════════════════════════════════
+   DETAIL DRAWER
+═══════════════════════════════════════════════════ */
+function openDrawer(title, sub){
+  $('drawer-title').textContent=title;
+  $('drawer-sub').textContent=sub||'';
+  $('drawer-body').innerHTML='<div class="muted center"><span class="spinner-sm"></span>&nbsp; Loading…</div>';
+  $('detail-drawer-overlay').classList.remove('hidden');
+}
+function closeDrawer(e){
+  if(e && e.target !== $('detail-drawer-overlay')) return;
+  $('detail-drawer-overlay').classList.add('hidden');
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape') $('detail-drawer-overlay').classList.add('hidden');});
+
+/* helper: get the host-name field from a mapping row regardless of API field name.
+   IBM Storage Virtualize lshostvdiskmap fields: host_name, host_id, name (=vdisk name),
+   vdisk_name, vdisk_id, id, SCSI_id, lun_id, etc. */
+function _mapHost(m){
+  return (m.host_name || m.host || m.hostname || '').trim();
+}
+/* helper: get the vdisk-name field from a mapping row */
+function _mapVol(m){
+  // lshostvdiskmap: "name" field = vdisk name (short list), "vdisk_name" = full detail
+  return (m.vdisk_name || m.name || m.volume || m.vdisk || m.disk_name || '').trim();
+}
+/* helper: normalise a mapping row into a canonical object for display */
+function _normMapping(m){
+  return {
+    host:    _mapHost(m),
+    vol:     _mapVol(m),
+    scsi_id: m.SCSI_id || m.scsi_id || m.id || '—',
+    lun_id:  m.lun_id  || '—',
+  };
+}
+
+/* Always fetch fresh mappings, hosts, vols for the drawer (never rely on stale cache) */
+async function _fetchAll(){
+  try{
+    const [rm, rh, rv] = await Promise.all([
+      fetch('/api/storage/mappings'),
+      fetch('/api/storage/hosts'),
+      fetch('/api/storage/volumes'),
+    ]);
+    const [dm, dh, dv] = await Promise.all([rm.json(), rh.json(), rv.json()]);
+    if(dm.ok) _allMappings = Array.isArray(dm.data) ? dm.data : [];
+    if(dh.ok) _allHosts    = Array.isArray(dh.data) ? dh.data : [];
+    if(dv.ok) _allVols     = Array.isArray(dv.data) ? dv.data : [];
+  }catch(_){}
+}
+
+/* ── Host → Mapped Disks ── */
+async function showHostDetail(hostName){
+  openDrawer(`Host: ${hostName}`, 'Mapped volumes for this host');
+  await _fetchAll();
+
+  const hostInfo = _allHosts.find(h=>(h.name||h.id||'').trim()===hostName) || {};
+  const maps     = _allMappings.filter(m => _mapHost(m) === hostName);
+
+  let html = '';
+
+  // Host properties
+  const props = [
+    ['Name',       hostInfo.name || hostName],
+    ['ID',         hostInfo.id],
+    ['Type',       hostInfo.type || hostInfo.host_type],
+    ['Port Count', hostInfo.port_count || hostInfo.num_wwns],
+    ['Status',     hostInfo.status],
+  ];
+  html += `<div class="form-section-container" style="margin-bottom:16px;">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-header-title">Host Properties</span>
+    </div>
+    <div class="section-body open">
+      <table class="data-table" style="font-size:12px;"><tbody>`;
+  props.forEach(([k,v])=>{
+    if(v===undefined||v===null||v==='') return;
+    html+=`<tr><td style="color:var(--muted);width:130px;">${esc(k)}</td>
+               <td>${k==='Status'?statusBadge(v):`<strong>${esc(String(v))}</strong>`}</td></tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+
+  // Show ALL fields from the API response as extra KV
+  const skipProps = new Set(['name','id','type','host_type','port_count','num_wwns','status']);
+  const extraEntries = Object.entries(hostInfo).filter(([k])=>!skipProps.has(k)&&hostInfo[k]!==''&&hostInfo[k]!==null&&hostInfo[k]!==undefined);
+  if(extraEntries.length){
+    html += `<div class="form-section-container" style="margin-bottom:16px;">
+      <div class="section-header" style="cursor:default;">
+        <span class="section-header-title">All Properties</span>
+      </div>
+      <div class="section-body open">
+        <div class="sysinfo-grid">`;
+    extraEntries.forEach(([k,v])=>{
+      html+=`<div class="sysinfo-item"><div class="sysinfo-key">${esc(k)}</div><div class="sysinfo-val">${esc(String(v))}</div></div>`;
+    });
+    html += `</div></div></div>`;
+  }
+
+  // Mapped volumes
+  html += `<div class="form-section-container">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-header-title">Mapped Volumes (${maps.length})</span>
+    </div>
+    <div class="section-body open">`;
+  if(!maps.length){
+    html += '<p class="muted" style="font-size:13px;padding:4px 0;">No volumes mapped to this host.</p>';
+  } else {
+    html += `<div style="overflow-x:auto;"><table class="data-table" style="font-size:12px;">
+      <thead><tr><th>Volume Name</th><th>SCSI ID</th><th>LUN ID</th><th>Capacity</th><th>Pool</th></tr></thead>
+      <tbody>`;
+    maps.forEach(m=>{
+      const vn = _mapVol(m);
+      const volInfo = _allVols.find(v=>(v.name||v.id||'').trim()===vn) || {};
+      const cap = fmtCap(volInfo.capacity||volInfo.mdisk_cap||volInfo.real_capacity||'');
+      html += `<tr>
+        <td><strong>${esc(vn||'—')}</strong></td>
+        <td>${esc(m.scsi_id||'—')}</td>
+        <td>${esc(m.lun_id||'—')}</td>
+        <td>${esc(cap)}</td>
+        <td>${esc(volInfo.mdisk_grp_name||volInfo.pool||'—')}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div></div>';
+
+  $('drawer-body').innerHTML = html;
+}
+
+/* ── Volume → Mapped Hosts ── */
+async function showVolDetail(volName){
+  openDrawer(`Volume: ${volName}`, 'Mapped hosts for this volume');
+  await _fetchAll();
+
+  const volInfo  = _allVols.find(v=>(v.name||v.id||'').trim()===volName) || {};
+  const maps     = _allMappings.filter(m => _mapVol(m) === volName);
+
+  let html = '';
+
+  // Volume properties
+  const props = [
+    ['Name',     volInfo.name || volName],
+    ['ID',       volInfo.id],
+    ['Capacity', fmtCap(volInfo.capacity||volInfo.mdisk_cap||volInfo.real_capacity||'')],
+    ['Pool',     volInfo.mdisk_grp_name || volInfo.pool],
+    ['Type',     volInfo.type],
+    ['Status',   volInfo.status],
+  ];
+  html += `<div class="form-section-container" style="margin-bottom:16px;">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-header-title">Volume Properties</span>
+    </div>
+    <div class="section-body open">
+      <table class="data-table" style="font-size:12px;"><tbody>`;
+  props.forEach(([k,v])=>{
+    if(v===undefined||v===null||v===''||v==='—') return;
+    html+=`<tr><td style="color:var(--muted);width:130px;">${esc(k)}</td>
+               <td>${k==='Status'?statusBadge(v):`<strong>${esc(String(v))}</strong>`}</td></tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+
+  // All extra fields
+  const skipVol = new Set(['name','id','capacity','mdisk_cap','real_capacity','mdisk_grp_name','pool','type','status']);
+  const extraVol = Object.entries(volInfo).filter(([k])=>!skipVol.has(k)&&volInfo[k]!==''&&volInfo[k]!==null&&volInfo[k]!==undefined);
+  if(extraVol.length){
+    html += `<div class="form-section-container" style="margin-bottom:16px;">
+      <div class="section-header" style="cursor:default;">
+        <span class="section-header-title">All Properties</span>
+      </div>
+      <div class="section-body open">
+        <div class="sysinfo-grid">`;
+    extraVol.forEach(([k,v])=>{
+      html+=`<div class="sysinfo-item"><div class="sysinfo-key">${esc(k)}</div><div class="sysinfo-val">${esc(String(v))}</div></div>`;
+    });
+    html += `</div></div></div>`;
+  }
+
+  // Mapped hosts
+  html += `<div class="form-section-container">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-header-title">Mapped Hosts (${maps.length})</span>
+    </div>
+    <div class="section-body open">`;
+  if(!maps.length){
+    html += '<p class="muted" style="font-size:13px;padding:4px 0;">This volume is not mapped to any host.</p>';
+  } else {
+    html += `<div style="overflow-x:auto;"><table class="data-table" style="font-size:12px;">
+      <thead><tr><th>Host Name</th><th>SCSI ID</th><th>LUN ID</th><th>Host Type</th><th>Status</th></tr></thead>
+      <tbody>`;
+    maps.forEach(m=>{
+      const hn    = _mapHost(m);
+      const hInfo = _allHosts.find(h=>(h.name||h.id||'').trim()===hn) || {};
+      html += `<tr>
+        <td><strong>${esc(hn||'—')}</strong></td>
+        <td>${esc(m.scsi_id||'—')}</td>
+        <td>${esc(m.lun_id||'—')}</td>
+        <td><span class="badge badge-blue">${esc(hInfo.type||hInfo.host_type||'—')}</span></td>
+        <td>${statusBadge(hInfo.status||'—')}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div></div>';
+
+  $('drawer-body').innerHTML = html;
+}
+
+/* ═══════════════════════════════════════════════════
+   ADD HOST
+═══════════════════════════════════════════════════ */
+$('add-host-form').addEventListener('submit',async e=>{
+  e.preventDefault(); hideResult('addhost-result');
+  const btn=$('addhost-btn'); btn.disabled=true;
+  btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Registering…';
+  const wwpns=[...document.querySelectorAll('.wwpn-entry')].map(i=>i.value.trim()).filter(Boolean);
+  const iqns=[...document.querySelectorAll('.iqn-entry')].map(i=>i.value.trim()).filter(Boolean);
+  const body={name:$('h-name').value.trim(),type:$('h-type').value,wwpns,iqns};
+  try{
+    const r=await fetch('/api/storage/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){
+      let msg=`Host "${body.name}" registered.`;
+      if(d.warnings&&d.warnings.length) msg+=' Warnings: '+d.warnings.join('; ');
+      showResult('addhost-result','success',msg);
+      $('add-host-form').reset(); resetPortLists(); loadHosts();
+    } else { showResult('addhost-result','error',d.error||'Failed.'); }
+  }catch(err){ showResult('addhost-result','error','Network error: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent='Register Host'; }
+});
+function addWwpnRow(){
+  const row=document.createElement('div'); row.className='port-row';
+  row.innerHTML=`<input class="form-control wwpn-entry" type="text" placeholder="e.g. 500507680B23C456" spellcheck="false"/>
+    <button type="button" class="btn-rm" onclick="rmPortRow(this)">&#10005;</button>`;
+  $('wwpn-list').appendChild(row);
+}
+function addIqnRow(){
+  const row=document.createElement('div'); row.className='port-row';
+  row.innerHTML=`<input class="form-control iqn-entry" type="text" placeholder="e.g. iqn.2024-01.com.example:hostname" spellcheck="false"/>
+    <button type="button" class="btn-rm" onclick="rmPortRow(this)">&#10005;</button>`;
+  $('iqn-list').appendChild(row);
+}
+function rmPortRow(btn){
+  const row=btn.closest('.port-row'),list=row.parentElement;
+  if(list.children.length>1) row.remove(); else row.querySelector('input').value='';
+}
+function resetPortLists(){
+  ['wwpn-list','iqn-list'].forEach(id=>{
+    const l=$(id);
+    while(l.children.length>1) l.lastElementChild.remove();
+    l.querySelector('input').value='';
+  });
+}
+
+/* ═══════════════════════════════════════════════════
+   ADD VOLUME
+═══════════════════════════════════════════════════ */
+$('add-vol-form').addEventListener('submit',async e=>{
+  e.preventDefault(); hideResult('addvol-result');
+  const btn=$('addvol-btn'); btn.disabled=true;
+  btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Creating…';
+  const body={name:$('v-name').value.trim(),size:parseInt($('v-size').value,10),pool:$('v-pool').value.trim()};
+  try{
+    const r=await fetch('/api/storage/volumes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){ showResult('addvol-result','success',`Volume "${body.name}" (${body.size} GB) created in pool "${body.pool}".`); $('add-vol-form').reset(); loadVolumes(); }
+    else { showResult('addvol-result','error',d.error||'Failed.'); }
+  }catch(err){ showResult('addvol-result','error','Network error: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent='Create Volume'; }
+});
+
+/* ═══════════════════════════════════════════════════
+   MAP VOLUME
+═══════════════════════════════════════════════════ */
+$('map-vol-form').addEventListener('submit',async e=>{
+  e.preventDefault(); hideResult('mapvol-result');
+  const btn=$('mapvol-btn'); btn.disabled=true;
+  btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Mapping…';
+  const body={host:$('m-host').value,volume:$('m-vol').value};
+  try{
+    const r=await fetch('/api/storage/mappings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){ showResult('mapvol-result','success',`Volume "${body.volume}" mapped to host "${body.host}".`); loadMappings(); }
+    else { showResult('mapvol-result','error',d.error||'Failed.'); }
+  }catch(err){ showResult('mapvol-result','error','Network error: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent='Map Volume'; }
+});
+
+/* ═══════════════════════════════════════════════════
+   UTILITIES
+═══════════════════════════════════════════════════ */
+function statusBadge(s){
+  const m={online:'badge-green',available:'badge-green',offline:'badge-red',
+            degraded:'badge-orange',error:'badge-red',unknown:'badge-grey'};
+  const cls=m[(s||'').toLowerCase()]||'badge-grey';
+  return `<span class="badge ${cls}">${esc(s||'—')}</span>`;
+}
+function fmtCap(raw){
+  if(!raw||raw==='—'||raw==='') return '—';
+  const s=String(raw);
+  if(/[a-zA-Z]/.test(s)) return s;
+  const n=parseFloat(s); if(isNaN(n)) return s;
+  if(n>=1099511627776) return (n/1099511627776).toFixed(2)+' TB';
+  if(n>=1073741824)    return (n/1073741824).toFixed(2)+' GB';
+  if(n>=1048576)       return (n/1048576).toFixed(2)+' MB';
+  return n+' B';
+}
+</script>
 {% endblock %}

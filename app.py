@@ -2613,6 +2613,356 @@ def handle_vterm_disconnect():
 
 
 # ──────────────────────────────────────────────────────────
+# IBM Storage FlashSystem / Storage Virtualize REST API
+# ──────────────────────────────────────────────────────────
+
+import requests as _requests
+import urllib3 as _urllib3
+
+_urllib3.disable_warnings(_urllib3.exceptions.InsecureRequestWarning)
+
+_STORAGE_API_VERSION = "v1"
+
+
+def _storage_headers(token: str) -> dict:
+    """Return headers for an authenticated Storage Virtualize REST request."""
+    return {
+        "X-Auth-Token": token,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _storage_base(ip: str) -> str:
+    return f"https://{ip}:7443/rest/{_STORAGE_API_VERSION}"
+
+
+# ── Session helpers ────────────────────────────────────────
+
+@app.route("/api/storage/login", methods=["POST"])
+def storage_login():
+    """Authenticate to IBM Storage Virtualize.
+
+    Credentials are passed as HTTP headers (X-Auth-Username / X-Auth-Password),
+    matching the exact curl pattern that is known to work against this system.
+    """
+    data = request.get_json(force=True) or {}
+    storage_ip = (data.get("storage_ip") or "").strip()
+    username   = (data.get("username") or "").strip()
+    password   = data.get("password") or ""
+
+    if not storage_ip or not username or not password:
+        return jsonify({"ok": False, "error": "storage_ip, username and password are required"}), 400
+
+    url = f"{_storage_base(storage_ip)}/auth"
+    try:
+        resp = _requests.post(
+            url,
+            headers={
+                "X-Auth-Username": username,
+                "X-Auth-Password": password,
+                "Content-Type": "application/json",
+            },
+            verify=False,
+            timeout=15,
+        )
+    except _requests.exceptions.ConnectionError as exc:
+        return jsonify({"ok": False, "error": f"Connection failed: {exc}"}), 502
+    except _requests.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "Connection timed out"}), 504
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if resp.status_code in (200, 201):
+        token = resp.headers.get("X-Auth-Token") or (resp.json().get("token") if resp.content else None)
+        if not token:
+            # Some firmware versions embed the token in the JSON body
+            try:
+                token = resp.json().get("token")
+            except Exception:
+                token = None
+        if not token:
+            return jsonify({"ok": False, "error": "Authenticated but no token received in response"}), 502
+        session["storage_ip"]       = storage_ip
+        session["storage_token"]    = token
+        session["storage_username"] = username
+        return jsonify({"ok": True, "token": token, "username": username, "storage_ip": storage_ip})
+
+    if resp.status_code in (401, 403):
+        return jsonify({"ok": False, "error": "Invalid credentials"}), 401
+
+    return jsonify({"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}), resp.status_code
+
+
+@app.route("/api/storage/logout", methods=["POST"])
+def storage_logout():
+    """Delete the active token on the storage array and clear the Flask session."""
+    token      = session.get("storage_token")
+    storage_ip = session.get("storage_ip")
+    if token and storage_ip:
+        try:
+            _requests.delete(
+                f"{_storage_base(storage_ip)}/auth",
+                headers=_storage_headers(token),
+                verify=False,
+                timeout=10,
+            )
+        except Exception:
+            pass
+    session.pop("storage_ip",       None)
+    session.pop("storage_token",    None)
+    session.pop("storage_username", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/storage/session", methods=["GET"])
+def storage_session_status():
+    """Return current storage session info (no sensitive data)."""
+    if session.get("storage_token"):
+        return jsonify({
+            "ok": True,
+            "connected": True,
+            "storage_ip": session.get("storage_ip"),
+            "username":   session.get("storage_username"),
+        })
+    return jsonify({"ok": True, "connected": False})
+
+
+def _storage_get(endpoint: str, params: dict = None):
+    """Query the Storage Virtualize REST API.
+
+    IBM Storage Virtualize uses HTTP POST for ALL commands (including read-only
+    ones like lssystem, lshost, lsvdisk, etc.).  A GET to most endpoints returns
+    405 Method Not Allowed.  We therefore always POST with an empty JSON body
+    (or the optional params dict) and the auth token header.
+    """
+    token      = session.get("storage_token")
+    storage_ip = session.get("storage_ip")
+    if not token or not storage_ip:
+        return {"ok": False, "error": "Not connected to storage"}, 401
+    url = f"{_storage_base(storage_ip)}/{endpoint}"
+    payload = params or {}
+    try:
+        resp = _requests.post(
+            url,
+            headers=_storage_headers(token),
+            json=payload,
+            verify=False,
+            timeout=20,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 502
+    if resp.status_code in (200, 201, 204):
+        try:
+            body = resp.json() if resp.content else []
+            return {"ok": True, "data": body}, 200
+        except Exception:
+            return {"ok": True, "data": resp.text}, 200
+    return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}, resp.status_code
+
+
+def _storage_post(endpoint: str, payload: dict):
+    """Authenticated POST against the storage REST API."""
+    token      = session.get("storage_token")
+    storage_ip = session.get("storage_ip")
+    if not token or not storage_ip:
+        return {"ok": False, "error": "Not connected to storage"}, 401
+    url = f"{_storage_base(storage_ip)}/{endpoint}"
+    try:
+        resp = _requests.post(url, headers=_storage_headers(token), json=payload, verify=False, timeout=30)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 502
+    if resp.status_code in (200, 201, 204):
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {}
+        return {"ok": True, "data": body}, resp.status_code
+    return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:500]}"}, resp.status_code
+
+
+# ── System information ─────────────────────────────────────
+
+@app.route("/api/storage/system", methods=["GET"])
+def storage_system_info():
+    """Retrieve basic system information (lssystem equivalent)."""
+    result, status = _storage_get("lssystem")
+    return jsonify(result), status
+
+
+# ── Hosts ──────────────────────────────────────────────────
+
+@app.route("/api/storage/hosts", methods=["GET"])
+def storage_list_hosts():
+    """List all hosts defined on the storage system."""
+    result, status = _storage_get("lshost")
+    return jsonify(result), status
+
+
+@app.route("/api/storage/hosts", methods=["POST"])
+def storage_add_host():
+    """Create a new host object on the storage system.
+
+    Expected JSON body:
+        {
+            "name":    "my-server",
+            "type":    "generic",          // host OS type (e.g. AIX, Windows, VMware, generic)
+            "wwpns":   ["500507680b23c456"],   // FC WWPNs  (optional)
+            "iqns":    ["iqn.2024-01.com.example:myserver"]  // iSCSI IQNs (optional)
+        }
+    """
+    data = request.get_json(force=True) or {}
+    name    = (data.get("name") or "").strip()
+    host_type = (data.get("type") or "generic").strip()
+    wwpns   = data.get("wwpns") or []
+    iqns    = data.get("iqns")  or []
+
+    if not name:
+        return jsonify({"ok": False, "error": "Host name is required"}), 400
+
+    # Step 1 – mkhost
+    payload = {"name": name, "type": host_type}
+    result, status = _storage_post("mkhost", payload)
+    if not result.get("ok"):
+        return jsonify(result), status
+
+    host_id = None
+    resp_data = result.get("data", {})
+    if isinstance(resp_data, dict):
+        host_id = resp_data.get("id") or resp_data.get("host_id")
+
+    errors = []
+
+    # Step 2 – add FC WWPNs via addhostport
+    for wwpn in wwpns:
+        wwpn = wwpn.strip().replace(":", "").lower()
+        if not wwpn:
+            continue
+        port_payload = {"name": host_id or name, "fcwwpn": wwpn}
+        pr, ps = _storage_post("addhostport", port_payload)
+        if not pr.get("ok"):
+            errors.append(f"WWPN {wwpn}: {pr.get('error')}")
+
+    # Step 3 – add iSCSI IQNs via addhostport
+    for iqn in iqns:
+        iqn = iqn.strip()
+        if not iqn:
+            continue
+        port_payload = {"name": host_id or name, "iscsiname": iqn}
+        pr, ps = _storage_post("addhostport", port_payload)
+        if not pr.get("ok"):
+            errors.append(f"IQN {iqn}: {pr.get('error')}")
+
+    return jsonify({
+        "ok": True,
+        "host_id": host_id,
+        "name": name,
+        "warnings": errors,
+    }), 201
+
+
+# ── Volumes (VDisks) ───────────────────────────────────────
+
+@app.route("/api/storage/volumes", methods=["GET"])
+def storage_list_volumes():
+    """List all volumes (VDisks) on the storage system."""
+    result, status = _storage_get("lsvdisk")
+    return jsonify(result), status
+
+
+@app.route("/api/storage/volumes", methods=["POST"])
+def storage_add_volume():
+    """Create a new volume (mkvdisk).
+
+    Expected JSON body:
+        {
+            "name":     "my-vol-01",
+            "size":     100,           // capacity in GB
+            "pool":     "Pool0"        // storage pool / mdisk group name
+        }
+    """
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    pool = (data.get("pool") or "").strip()
+    try:
+        size_gb = int(data.get("size", 0))
+    except (TypeError, ValueError):
+        size_gb = 0
+
+    if not name:
+        return jsonify({"ok": False, "error": "Volume name is required"}), 400
+    if not pool:
+        return jsonify({"ok": False, "error": "Storage pool name is required"}), 400
+    if size_gb <= 0:
+        return jsonify({"ok": False, "error": "Size must be a positive integer (GB)"}), 400
+
+    payload = {
+        "name":  name,
+        "mdiskgrp": pool,
+        "size":  str(size_gb),
+        "unit":  "gb",
+    }
+    result, status = _storage_post("mkvdisk", payload)
+    return jsonify(result), status
+
+
+# ── Storage Pools ──────────────────────────────────────────
+
+@app.route("/api/storage/pools", methods=["GET"])
+def storage_list_pools():
+    """List all MDisk groups (storage pools)."""
+    result, status = _storage_get("lsmdiskgrp")
+    return jsonify(result), status
+
+
+# ── Host–Volume Mapping ────────────────────────────────────
+
+@app.route("/api/storage/mappings", methods=["GET"])
+def storage_list_mappings():
+    """List all host–volume mappings (lshostvdiskmap).
+
+    The IBM Storage Virtualize REST API returns lshostvdiskmap rows with these fields:
+      id, name (vdisk name), SCSI_id, host_id, host_name, vdisk_id, vdisk_name,
+      vdisk_UID, IO_group_id, IO_group_name, mapping_type, fc_id, fc_name, rc_id,
+      rc_name, se_copy_id, copy_id, lun_id, ...
+    We return the raw list and let the frontend normalise field names.
+    """
+    result, status = _storage_get("lshostvdiskmap")
+    return jsonify(result), status
+
+
+@app.route("/api/storage/mappings/debug", methods=["GET"])
+def storage_mappings_debug():
+    """Debug endpoint — returns raw lshostvdiskmap response so field names can be inspected."""
+    result, status = _storage_get("lshostvdiskmap")
+    return jsonify(result), status
+
+
+@app.route("/api/storage/mappings", methods=["POST"])
+def storage_map_volume():
+    """Map a volume to a host (mkvdiskhostmap).
+
+    Expected JSON body:
+        {
+            "host":   "my-server",     // host name or id
+            "volume": "my-vol-01"      // volume (vdisk) name or id
+        }
+    """
+    data = request.get_json(force=True) or {}
+    host   = (data.get("host")   or "").strip()
+    volume = (data.get("volume") or "").strip()
+
+    if not host:
+        return jsonify({"ok": False, "error": "Host name is required"}), 400
+    if not volume:
+        return jsonify({"ok": False, "error": "Volume name is required"}), 400
+
+    payload = {"host": host, "vdisk": volume}
+    result, status = _storage_post("mkvdiskhostmap", payload)
+    return jsonify(result), status
+
+
+# ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5001, debug=True)
