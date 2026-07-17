@@ -464,20 +464,49 @@
         </div>
       </div>
       <div class="section-body open" id="sec-addvol">
+        <p style="font-size:11px;color:var(--muted);margin-bottom:12px;">
+          Creates an empty volume from an existing storage pool using the
+          <code>mkvolume</code> command. If the target pool uses a provisioning
+          policy, the volume adopts that policy's default values and capacity-saving
+          characteristics automatically.
+        </p>
         <form id="add-vol-form" autocomplete="off">
           <div class="row g-3">
             <div class="col-12">
-              <label class="form-label">Volume Name <span class="req">*</span></label>
-              <input id="v-name" class="form-control" type="text" placeholder="e.g. AIX-PROD-VOL01" required />
+              <label class="form-label">Volume Name <small style="color:var(--muted);font-weight:400;">(optional)</small></label>
+              <input id="v-name" class="form-control" type="text" placeholder="e.g. AIX-PROD-VOL01" />
             </div>
             <div class="col-md-6">
-              <label class="form-label">Capacity (GB) <span class="req">*</span></label>
+              <label class="form-label">Capacity <span class="req">*</span></label>
               <input id="v-size" class="form-control" type="number" min="1" placeholder="e.g. 100" required />
             </div>
             <div class="col-md-6">
+              <label class="form-label">Unit</label>
+              <select id="v-unit" class="form-select">
+                <option value="b">B</option>
+                <option value="kb">KB</option>
+                <option value="mb">MB</option>
+                <option value="gb" selected>GB</option>
+                <option value="tb">TB</option>
+                <option value="pb">PB</option>
+              </select>
+            </div>
+            <div class="col-12">
               <label class="form-label">Storage Pool <span class="req">*</span></label>
               <input id="v-pool" class="form-control" type="text" placeholder="e.g. Pool0" list="pool-datalist" required />
               <datalist id="pool-datalist"></datalist>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">I/O Group <small style="color:var(--muted);font-weight:400;">(optional)</small></label>
+              <input id="v-iogrp" class="form-control" type="text" placeholder="e.g. 0" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Preferred Node <small style="color:var(--muted);font-weight:400;">(optional)</small></label>
+              <input id="v-prefnode" class="form-control" type="text" placeholder="e.g. node1" />
+            </div>
+            <div class="col-12">
+              <label class="form-label">Volume Group <small style="color:var(--muted);font-weight:400;">(optional)</small></label>
+              <input id="v-vg" class="form-control" type="text" placeholder="e.g. vg1 (name / id / uuid)" />
             </div>
             <div class="col-12">
               <div id="addvol-result" class="result-box"></div>
@@ -1311,15 +1340,28 @@ $('add-vol-form').addEventListener('submit',async e=>{
   e.preventDefault(); hideResult('addvol-result');
   const btn=$('addvol-btn'); btn.disabled=true;
   btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Creating…';
-  const body={name:$('v-name').value.trim(),size:parseInt($('v-size').value,10),pool:$('v-pool').value.trim()};
+  const body={
+    name:          $('v-name').value.trim(),
+    size:          parseInt($('v-size').value,10),
+    unit:          $('v-unit').value,
+    pool:          $('v-pool').value.trim(),
+    iogrp:         $('v-iogrp').value.trim(),
+    preferrednode: $('v-prefnode').value.trim(),
+    volumegroup:   $('v-vg').value.trim(),
+  };
   try{
     const r=await fetch('/api/storage/volumes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
-    if(d.ok){ showResult('addvol-result','success',`Volume "${body.name}" (${body.size} GB) created in pool "${body.pool}".`); $('add-vol-form').reset(); loadVolumes(); }
+    if(d.ok){
+      const label=body.name || '(auto-named)';
+      showResult('addvol-result','success',`Volume "${label}" (${body.size} ${body.unit.toUpperCase()}) created in pool "${body.pool}".`);
+      $('add-vol-form').reset(); loadVolumes();
+    }
     else { showResult('addvol-result','error',d.error||'Failed.'); }
   }catch(err){ showResult('addvol-result','error','Network error: '+err.message); }
   finally{ btn.disabled=false; btn.textContent='Create Volume'; }
 });
+
 
 /* ═══════════════════════════════════════════════════
    MAP VOLUME

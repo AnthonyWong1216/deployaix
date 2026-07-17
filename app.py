@@ -2930,37 +2930,68 @@ def storage_list_volumes():
 
 @app.route("/api/storage/volumes", methods=["POST"])
 def storage_add_volume():
-    """Create a new volume (mkvdisk).
+    """Create a new volume from an existing storage pool (mkvolume).
+
+    Uses the IBM Storage Virtualize ``mkvolume`` command to create an empty
+    volume.  When the target pool uses a provisioning policy, the volume adopts
+    the default values and capacity-saving characteristics defined in that
+    policy, and the command parameters are simplified to name, size, unit and
+    pool.
+
+    mkvolume syntax (with a provisioning policy):
+        mkvolume [-name name] -size disk_size [-unit b|kb|mb|gb|tb|pb]
+                 -pool storage_pool_id|storage_pool_name
+                 [-iogrp iogroup_id|iogroup_name]
+                 [-preferrednode node_id|node_name]
+                 [-volumegroup volumegroup_name|volumegroup_id|volumegroup_uuid]
 
     Expected JSON body:
         {
-            "name":     "my-vol-01",
-            "size":     100,           // capacity in GB
-            "pool":     "Pool0"        // storage pool / mdisk group name
+            "name":          "my-vol-01",   // optional volume name
+            "size":          100,           // capacity (required)
+            "unit":          "gb",          // b|kb|mb|gb|tb|pb (default gb)
+            "pool":          "Pool0",       // storage pool id/name (required)
+            "iogrp":         "0",           // optional I/O group id/name
+            "preferrednode": "node1",       // optional preferred node id/name
+            "volumegroup":   "vg1"          // optional volume group id/name/uuid
         }
     """
     data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    pool = (data.get("pool") or "").strip()
+    name          = (data.get("name") or "").strip()
+    pool          = (data.get("pool") or "").strip()
+    unit          = (data.get("unit") or "gb").strip().lower()
+    iogrp         = (data.get("iogrp") or "").strip()
+    preferrednode = (data.get("preferrednode") or "").strip()
+    volumegroup   = (data.get("volumegroup") or "").strip()
     try:
-        size_gb = int(data.get("size", 0))
+        size = int(data.get("size", 0))
     except (TypeError, ValueError):
-        size_gb = 0
+        size = 0
 
-    if not name:
-        return jsonify({"ok": False, "error": "Volume name is required"}), 400
+    valid_units = {"b", "kb", "mb", "gb", "tb", "pb"}
+    if unit not in valid_units:
+        unit = "gb"
+
     if not pool:
         return jsonify({"ok": False, "error": "Storage pool name is required"}), 400
-    if size_gb <= 0:
-        return jsonify({"ok": False, "error": "Size must be a positive integer (GB)"}), 400
+    if size <= 0:
+        return jsonify({"ok": False, "error": "Size must be a positive integer"}), 400
 
     payload = {
-        "name":  name,
-        "mdiskgrp": pool,
-        "size":  str(size_gb),
-        "unit":  "gb",
+        "size": str(size),
+        "unit": unit,
+        "pool": pool,
     }
-    result, status = _storage_post("mkvdisk", payload)
+    if name:
+        payload["name"] = name
+    if iogrp:
+        payload["iogrp"] = iogrp
+    if preferrednode:
+        payload["preferrednode"] = preferrednode
+    if volumegroup:
+        payload["volumegroup"] = volumegroup
+
+    result, status = _storage_post("mkvolume", payload)
     return jsonify(result), status
 
 
