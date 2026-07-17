@@ -2717,13 +2717,15 @@ def storage_logout():
 
 @app.route("/api/storage/session", methods=["GET"])
 def storage_session_status():
-    """Return current storage session info (no sensitive data)."""
+    """Return current storage session info, including the auth token so the UI
+    can display it (masked by default, revealable via the eye icon)."""
     if session.get("storage_token"):
         return jsonify({
             "ok": True,
             "connected": True,
             "storage_ip": session.get("storage_ip"),
             "username":   session.get("storage_username"),
+            "token":      session.get("storage_token"),
         })
     return jsonify({"ok": True, "connected": False})
 
@@ -2799,66 +2801,122 @@ def storage_list_hosts():
     return jsonify(result), status
 
 
+@app.route("/api/storage/hostports", methods=["GET"])
+def storage_list_hostports():
+    """List host port (WWPN / iSCSI IQN) details (lshostports).
+
+    Returns rows containing at least: host_id, host_name, WWPN (or iscsi_name),
+    type, status.  Used by the front-end to display a host's ports when its
+    row is expanded in the Hosts table.
+    """
+    result, status = _storage_get("lshostports")
+    return jsonify(result), status
+
+
+
 @app.route("/api/storage/hosts", methods=["POST"])
 def storage_add_host():
-    """Create a new host object on the storage system.
+    """Create a new host object on the storage system (mkhost + addhostport).
+
+    IBM Storage Virtualize mkhost accepts exactly ONE port identifier per call.
+    Additional ports must be added with separate addhostport calls afterwards.
 
     Expected JSON body:
         {
-            "name":    "my-server",
-            "type":    "generic",          // host OS type (e.g. AIX, Windows, VMware, generic)
-            "wwpns":   ["500507680b23c456"],   // FC WWPNs  (optional)
-            "iqns":    ["iqn.2024-01.com.example:myserver"]  // iSCSI IQNs (optional)
+            "name":     "my-server",
+            "protocol": "fcscsi",          // optional connection protocol
+            "type":     "generic",         // host OS type
+            "wwpns":    ["500507680b23c456", ...],   // FC WWPNs
+            "iqns":     ["iqn.2024-01.com.example:myserver", ...],
+            "nqns":     ["nqn.2014-08.org.nvmexpress:uuid:..."],
+            "iogrp":    "0:1"              // optional
         }
     """
+    def _clean_wwpn(raw: str) -> str:
+        """Strip separators and return uppercase bare hex digits."""
+        return "".join(c for c in raw if c in "0123456789abcdefABCDEF").upper()
+
     data = request.get_json(force=True) or {}
-    name    = (data.get("name") or "").strip()
-    host_type = (data.get("type") or "generic").strip()
-    wwpns   = data.get("wwpns") or []
-    iqns    = data.get("iqns")  or []
+    name      = (data.get("name") or "").strip()
+    protocol  = (data.get("protocol") or "").strip().lower()
+    host_type = (data.get("type") or "generic").strip().lower()
+    raw_wwpns = [w for w in (data.get("wwpns") or []) if w.strip()]
+    iqns      = [i.strip() for i in (data.get("iqns")  or []) if i.strip()]
+    nqns      = [n.strip() for n in (data.get("nqns")  or []) if n.strip()]
+    iogrp     = (data.get("iogrp") or "").strip()
 
     if not name:
         return jsonify({"ok": False, "error": "Host name is required"}), 400
 
-    # Step 1 – mkhost
-    payload = {"name": name, "type": host_type}
+    # ── Validate & normalise WWPNs ──────────────────────────────────────────
+    # The IBM Storage Virtualize REST API stores and accepts WWPNs as
+    # 16-char uppercase bare hex, e.g. "100070B7E428A00A" (no colons).
+    wwpns = []
+    for w in raw_wwpns:
+        hexonly = _clean_wwpn(w)
+        if len(hexonly) != 16:
+            return jsonify({
+                "ok": False,
+                "error": (f"Invalid WWPN '{w}': must be exactly 16 hex digits "
+                          f"(got {len(hexonly)}).")
+            }), 400
+        wwpns.append(hexonly)
+
+    # -type only accepts these values per the mkhost syntax.
+    valid_types = {"hpux", "tpgs", "generic", "adminlun"}
+    if host_type not in valid_types:
+        host_type = "generic"
+
+    # ── mkhost — all WWPNs colon-joined in a single call ────────────────────
+    # The REST API accepts multiple ports as a colon-separated string in one
+    # mkhost call, e.g. "C0507607041A0023:C0507607041A0024".
+    # force:true allows registering WWPNs not yet logged into the fabric.
+    payload = {
+        "name":     name,
+        "type":     host_type,
+        "protocol": protocol if protocol else "fcscsi",
+        "force":    True,
+    }
+    if iogrp:
+        payload["iogrp"] = iogrp
+
+    if wwpns:
+        payload["fcwwpn"] = ":".join(wwpns)
+    elif iqns:
+        payload["iscsiname"] = ":".join(iqns)
+    elif nqns:
+        payload["nqn"] = ":".join(nqns)
+
     result, status = _storage_post("mkhost", payload)
     if not result.get("ok"):
         return jsonify(result), status
 
-    host_id = None
     resp_data = result.get("data", {})
+    host_id = None
     if isinstance(resp_data, dict):
         host_id = resp_data.get("id") or resp_data.get("host_id")
-
-    errors = []
-
-    # Step 2 – add FC WWPNs via addhostport
-    for wwpn in wwpns:
-        wwpn = wwpn.strip().replace(":", "").lower()
-        if not wwpn:
-            continue
-        port_payload = {"name": host_id or name, "fcwwpn": wwpn}
-        pr, ps = _storage_post("addhostport", port_payload)
-        if not pr.get("ok"):
-            errors.append(f"WWPN {wwpn}: {pr.get('error')}")
-
-    # Step 3 – add iSCSI IQNs via addhostport
-    for iqn in iqns:
-        iqn = iqn.strip()
-        if not iqn:
-            continue
-        port_payload = {"name": host_id or name, "iscsiname": iqn}
-        pr, ps = _storage_post("addhostport", port_payload)
-        if not pr.get("ok"):
-            errors.append(f"IQN {iqn}: {pr.get('error')}")
 
     return jsonify({
         "ok": True,
         "host_id": host_id,
         "name": name,
-        "warnings": errors,
+        "warnings": [],
     }), 201
+
+
+
+@app.route("/api/storage/hosts/<host_id>", methods=["DELETE"])
+def storage_remove_host(host_id):
+    """Delete a host object (rmhost).
+
+    The IBM Storage Virtualize rmhost REST API path is:
+        POST /rest/v1/rmhost/{id}
+    where {id} is the numeric host ID passed as the URL segment.
+    """
+    result, status = _storage_post(f"rmhost/{host_id}", {"force": True})
+    if not result.get("ok"):
+        return jsonify(result), status
+    return jsonify({"ok": True, "host_id": host_id})
 
 
 # ── Volumes (VDisks) ───────────────────────────────────────

@@ -16,6 +16,7 @@ const statusDot = document.getElementById("hmc-status-dot");
 const statusLabel = document.getElementById("hmc-status-label");
 
 async function refreshHMCSelector(hmcs) {
+  if (!hmcSel) return;
   if (!hmcs) {
     hmcs = await fetch("/api/hmcs").then(r => r.json()).catch(() => []);
   }
@@ -31,7 +32,7 @@ async function refreshHMCSelector(hmcs) {
   }
 }
 
-hmcSel.addEventListener("change", () => {
+hmcSel?.addEventListener("change", () => {
   const id = hmcSel.value;
   window.activeHMCId = id || null;
   sessionStorage.setItem("activeHMCId", id || "");
@@ -43,6 +44,7 @@ hmcSel.addEventListener("change", () => {
 });
 
 function updateStatusIndicator(hmc) {
+  if (!statusDot || !statusLabel) return;
   if (hmc) {
     statusDot.className = "status-dot connected";
     statusLabel.textContent = hmc.name;

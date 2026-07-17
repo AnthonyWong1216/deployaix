@@ -81,7 +81,28 @@
     margin-bottom: 20px; flex-wrap: wrap;
   }
   .conn-status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
-  .conn-status-text { font-size: 13px; color: var(--green); font-weight: 600; flex: 1; }
+  .conn-status-text { font-size: 13px; color: var(--green); font-weight: 600; }
+
+  /* API token row (masked, revealable) */
+  .conn-token-wrap {
+    display: flex; align-items: center; gap: 6px; flex: 1;
+    font-size: 12px; color: var(--green); min-width: 0;
+  }
+  .conn-token-label { font-weight: 600; white-space: nowrap; }
+  .conn-token-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; background: rgba(0,0,0,.05);
+    border: 1px solid #86efac; border-radius: 4px;
+    padding: 2px 8px; color: var(--text);
+    max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .conn-token-eye {
+    background: none; border: none; cursor: pointer; padding: 2px 4px;
+    color: var(--green); display: inline-flex; align-items: center; flex-shrink: 0;
+  }
+  .conn-token-eye svg { width: 16px; height: 16px; fill: currentColor; }
+  .conn-token-eye:hover { color: var(--accent); }
+
 
   /* Tab nav */
   .storage-tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 22px; }
@@ -152,6 +173,30 @@
   .row-link:hover td { background: var(--blue-bg) !important; }
   .row-link td:first-child { padding-left: 8px; }
   .click-hint { font-size: 10px; color: var(--muted); margin-left: 4px; }
+
+  /* ── Expandable rows (inline detail under a host / volume row) ── */
+  .expand-caret {
+    display: inline-block; width: 14px; text-align: center;
+    color: var(--muted); transition: transform .18s; margin-right: 4px;
+    font-size: 11px;
+  }
+  .row-link.expanded .expand-caret { transform: rotate(90deg); color: var(--accent); }
+  .detail-row > td {
+    background: #f8fafc !important; padding: 0 !important; cursor: default;
+  }
+  .detail-inner { padding: 12px 16px 14px; }
+  .detail-inner .detail-title {
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
+  }
+  .detail-inner table.data-table { font-size: 12px; margin: 0; }
+  .map-badge {
+    display: inline-block; padding: 2px 9px; margin: 2px 4px 2px 0;
+    border-radius: 12px; font-size: 12px; font-weight: 600;
+    background: var(--blue-bg); color: var(--accent); border: 1px solid #bcd0f5;
+  }
+  .map-badge small { color: var(--muted); font-weight: 500; }
+
 
   /* ── Detail drawer (slide-in from right) ── */
   .drawer-overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:300;
@@ -231,6 +276,22 @@
   <div class="conn-status-bar">
     <span class="conn-status-dot"></span>
     <span class="conn-status-text" id="conn-status-text">Connected</span>
+    <span class="conn-token-wrap" id="conn-token-wrap" style="display:none;">
+      <span class="conn-token-label">API Key:</span>
+      <span class="conn-token-value" id="conn-token-value" data-token="">••••••••••••••••</span>
+      <button type="button" class="conn-token-eye" id="conn-token-eye"
+              title="Show / hide API key" onclick="toggleTokenVisibility()">
+        <svg id="conn-token-eye-icon" viewBox="0 0 16 16">
+          <path d="M8 3C4.5 3 1.7 5.1.5 8c1.2 2.9 4 5 7.5 5s6.3-2.1 7.5-5C14.3 5.1 11.5 3 8 3zm0 8.3A3.3 3.3 0 118 4.7a3.3 3.3 0 010 6.6zm0-1.6a1.7 1.7 0 100-3.4 1.7 1.7 0 000 3.4z"/>
+        </svg>
+      </button>
+      <button type="button" class="conn-token-eye" id="conn-token-copy"
+              title="Copy API key" onclick="copyToken()">
+        <svg viewBox="0 0 16 16">
+          <path d="M10 1H4a1 1 0 00-1 1v8h1V2h6V1zm2 2H6a1 1 0 00-1 1v10a1 1 0 001 1h6a1 1 0 001-1V4a1 1 0 00-1-1zm0 11H6V4h6v10z"/>
+        </svg>
+      </button>
+    </span>
     <button class="btn btn-danger btn-sm" id="logout-btn" style="margin-left:auto;">Disconnect</button>
   </div>
 
@@ -243,25 +304,6 @@
 
   <!-- ═══ TAB 1: System Info ═══ -->
   <div id="tab-sysinfo" class="storage-panel active">
-
-    <!-- System Overview -->
-    <div class="form-section-container">
-      <div class="section-header" onclick="toggleSection('sec-overview')">
-        <span class="section-header-title">System Overview</span>
-        <input class="section-search" type="text" placeholder="&#128269; Filter…"
-               onclick="event.stopPropagation()"
-               oninput="filterSysinfoGrid(this.value)" />
-        <div class="section-header-actions">
-          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadSysinfo()">&#8635;</button>
-          <span class="section-chevron open" id="chev-sec-overview">&#9660;</span>
-        </div>
-      </div>
-      <div class="section-body open" id="sec-overview">
-        <div id="sysinfo-loading" style="color:var(--muted);font-size:13px;"><span class="spinner-sm"></span>&nbsp; Loading…</div>
-        <div id="sysinfo-grid" class="sysinfo-grid" style="display:none;"></div>
-        <div id="sysinfo-no-match" class="no-filter-match">No matching properties.</div>
-      </div>
-    </div>
 
     <!-- Defined Hosts -->
     <div class="form-section-container">
@@ -277,13 +319,13 @@
       </div>
       <div class="section-body open" id="sec-hosts">
         <p style="font-size:11px;color:var(--muted);margin-bottom:8px;">
-          Click a host row to view its mapped volumes.
+          Click a host row to view its port details (WWPNs / iSCSI IQNs) and mapped volumes.
         </p>
         <div style="overflow-x:auto;">
           <table class="data-table">
-            <thead><tr><th>ID</th><th>Name</th><th>Ports</th><th>Type</th><th>Status</th></tr></thead>
+            <thead><tr><th>ID</th><th>Name</th><th>Ports</th><th>Type</th><th>Status</th><th></th></tr></thead>
             <tbody id="hosts-tbody">
-              <tr><td colspan="5" class="muted center">Loading…</td></tr>
+              <tr><td colspan="6" class="muted center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -319,28 +361,22 @@
       </div>
     </div>
 
-    <!-- Mappings -->
+    <!-- System Overview (collapsed, at bottom) -->
     <div class="form-section-container">
-      <div class="section-header" onclick="toggleSection('sec-maps')">
-        <span class="section-header-title">Host–Volume Mappings</span>
-        <input class="section-search" type="text" placeholder="&#128269; Filter mappings…"
+      <div class="section-header" onclick="toggleSection('sec-overview')">
+        <span class="section-header-title">System Overview</span>
+        <input class="section-search" type="text" placeholder="&#128269; Filter…"
                onclick="event.stopPropagation()"
-               oninput="filterTable('maps-tbody', this.value, 'maps-no-match')" />
+               oninput="filterSysinfoGrid(this.value)" />
         <div class="section-header-actions">
-          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadMappings()">&#8635;</button>
-          <span class="section-chevron open" id="chev-sec-maps">&#9660;</span>
+          <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();loadSysinfo()">&#8635;</button>
+          <span class="section-chevron" id="chev-sec-overview">&#9660;</span>
         </div>
       </div>
-      <div class="section-body open" id="sec-maps">
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead><tr><th>Host</th><th>Volume</th><th>SCSI ID</th><th>LUN ID</th></tr></thead>
-            <tbody id="maps-tbody">
-              <tr><td colspan="4" class="muted center">Loading…</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div id="maps-no-match" class="no-filter-match">No matching mappings.</div>
+      <div class="section-body" id="sec-overview">
+        <div id="sysinfo-loading" style="color:var(--muted);font-size:13px;"><span class="spinner-sm"></span>&nbsp; Loading…</div>
+        <div id="sysinfo-grid" class="sysinfo-grid" style="display:none;"></div>
+        <div id="sysinfo-no-match" class="no-filter-match">No matching properties.</div>
       </div>
     </div>
 
@@ -363,16 +399,30 @@
               <input id="h-name" class="form-control" type="text" placeholder="e.g. AIX-PROD-01" required />
             </div>
             <div class="col-md-6">
-              <label class="form-label">Host OS / Type</label>
-              <select id="h-type" class="form-select">
-                <option value="generic">Generic</option>
-                <option value="aix">IBM AIX</option>
-                <option value="windows">Windows</option>
-                <option value="linux">Linux</option>
-                <option value="esxi">VMware ESXi</option>
-                <option value="hpux">HP-UX</option>
-                <option value="solaris">Oracle Solaris</option>
+              <label class="form-label">Protocol</label>
+              <select id="h-protocol" class="form-select">
+                <option value="">— default —</option>
+                <option value="fcscsi" selected>FC-SCSI (fcscsi)</option>
+                <option value="fcnvme">FC-NVMe (fcnvme)</option>
+                <option value="rdmanvme">RDMA-NVMe (rdmanvme)</option>
+                <option value="tcpnvme">TCP-NVMe (tcpnvme)</option>
+                <option value="sas">SAS (sas)</option>
+                <option value="iscsi">iSCSI (iscsi)</option>
+                <option value="scsi">SCSI (scsi)</option>
               </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Host Type</label>
+              <select id="h-type" class="form-select">
+                <option value="generic" selected>Generic</option>
+                <option value="hpux">HP-UX (hpux)</option>
+                <option value="tpgs">TPGS (tpgs)</option>
+                <option value="adminlun">Admin LUN (adminlun)</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">I/O Group <small style="color:var(--muted);font-weight:400;">(optional, e.g. 0:1)</small></label>
+              <input id="h-iogrp" class="form-control" type="text" placeholder="e.g. 0:1" />
             </div>
             <div class="col-12">
               <label class="form-label">FC WWPNs <small style="color:var(--muted);font-weight:400;">(colons optional)</small></label>
@@ -587,14 +637,62 @@ function onLoginSuccess(d){
   $('storage-login-panel').style.display='none';
   $('storage-dashboard').style.display='block';
   $('conn-status-text').textContent=`Connected to ${d.storage_ip||'?'} as ${d.username||'?'}`;
+  setApiToken(d.token || '');
   loadAllData();
 }
 (async()=>{
   try{
     const r=await fetch('/api/storage/session'); const d=await r.json();
-    if(d.ok&&d.connected) onLoginSuccess({storage_ip:d.storage_ip,username:d.username});
+    if(d.ok&&d.connected) onLoginSuccess({storage_ip:d.storage_ip,username:d.username,token:d.token});
   }catch(_){}
 })();
+
+/* ── API token (masked by default, revealed via eye icon) ── */
+function setApiToken(token){
+  const wrap=$('conn-token-wrap'), val=$('conn-token-value');
+  if(!wrap||!val) return;
+  if(!token){ wrap.style.display='none'; val.dataset.token=''; return; }
+  val.dataset.token=token;
+  val.dataset.revealed='0';
+  val.textContent='•'.repeat(Math.min(24, Math.max(12, token.length)));
+  wrap.style.display='flex';
+}
+function toggleTokenVisibility(){
+  const val=$('conn-token-value');
+  if(!val) return;
+  const token=val.dataset.token||'';
+  if(!token) return;
+  const revealed = val.dataset.revealed==='1';
+  if(revealed){
+    val.dataset.revealed='0';
+    val.textContent='•'.repeat(Math.min(24, Math.max(12, token.length)));
+    val.title='';
+  } else {
+    val.dataset.revealed='1';
+    val.textContent=token;
+    val.title=token;
+  }
+}
+function copyToken(){
+  const val=$('conn-token-value');
+  if(!val) return;
+  const token=val.dataset.token||'';
+  if(!token) return;
+  const done=()=>showToast('API key copied to clipboard','success');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(token).then(done).catch(()=>fallbackCopy(token,done));
+  } else {
+    fallbackCopy(token,done);
+  }
+}
+function fallbackCopy(text,done){
+  const ta=document.createElement('textarea');
+  ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); if(done) done(); }
+  catch(_){ showToast('Copy failed','error'); }
+  document.body.removeChild(ta);
+}
 
 /* ═══════════════════════════════════════════════════
    LOGOUT
@@ -615,8 +713,9 @@ $('logout-btn').addEventListener('click',async()=>{
 let _allMappings=[];
 let _allHosts=[];
 let _allVols=[];
+let _allHostPorts=[];
 
-function loadAllData(){ loadSysinfo(); loadHosts(); loadVolumes(); loadMappings(); loadPools(); }
+function loadAllData(){ loadSysinfo(); loadHosts(); loadVolumes(); loadPools(); }
 
 /* System info */
 async function loadSysinfo(){
@@ -666,16 +765,43 @@ async function loadHosts(){
     if(!d.ok){tbody.innerHTML=`<tr><td colspan="5" class="error-text">${esc(d.error)}</td></tr>`;return;}
     const rows=Array.isArray(d.data)?d.data:[];
     _allHosts=rows;
-    if(!rows.length){tbody.innerHTML='<tr><td colspan="5" class="muted center">No hosts defined.</td></tr>';return;}
-    tbody.innerHTML=rows.map(h=>`
-      <tr class="row-link" onclick="showHostDetail('${esc(h.name||h.id)}')">
-        <td>${esc(h.id||'—')}</td>
-        <td><strong style="color:var(--accent);text-decoration:underline dotted;">${esc(h.name||'—')}</strong></td>
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="6" class="muted center">No hosts defined.</td></tr>';return;}
+    tbody.innerHTML=rows.map((h,i)=>{
+      const hn=esc(h.name||h.id);
+      const hid=esc(h.id||'');
+      return `
+      <tr class="row-link" id="host-row-${i}" onclick="toggleHostRow(${i}, '${hn}')">
+        <td><span class="expand-caret">&#9656;</span>${hid}</td>
+        <td><strong style="color:var(--accent);">${esc(h.name||'—')}</strong></td>
         <td>${esc(h.port_count||h.num_wwns||'—')}</td>
         <td><span class="badge badge-blue">${esc(h.type||h.host_type||'generic')}</span></td>
         <td>${statusBadge(h.status||'online')}</td>
-      </tr>`).join('');
+        <td onclick="event.stopPropagation()">
+          <button class="btn-rm" title="Remove host" onclick="removeHost('${hid}','${hn}')">&#10005;</button>
+        </td>
+      </tr>
+      <tr class="detail-row" id="host-detail-${i}" style="display:none;">
+        <td colspan="6"><div class="detail-inner" id="host-detail-inner-${i}"></div></td>
+      </tr>`;
+    }).join('');
   }catch(err){tbody.innerHTML=`<tr><td colspan="5" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
+}
+
+
+async function removeHost(hostId, hostName){
+  if(!confirm(`Remove host "${hostName}" (ID: ${hostId})?\n\nThis will permanently delete the host object from the storage system.`)) return;
+  try{
+    const r=await fetch(`/api/storage/hosts/${hostId}`,{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){
+      loadHosts();
+      populateMapDropdowns();
+    } else {
+      alert(`Failed to remove host "${hostName}":\n${d.error||'Unknown error'}`);
+    }
+  }catch(err){
+    alert(`Network error removing host: ${err.message}`);
+  }
 }
 
 /* Volumes */
@@ -688,17 +814,24 @@ async function loadVolumes(){
     const rows=Array.isArray(d.data)?d.data:[];
     _allVols=rows;
     if(!rows.length){tbody.innerHTML='<tr><td colspan="6" class="muted center">No volumes.</td></tr>';return;}
-    tbody.innerHTML=rows.map(v=>`
-      <tr class="row-link" onclick="showVolDetail('${esc(v.name||v.id)}')">
-        <td>${esc(v.id||'—')}</td>
-        <td><strong style="color:var(--accent);text-decoration:underline dotted;">${esc(v.name||'—')}</strong></td>
+    tbody.innerHTML=rows.map((v,i)=>{
+      const vn=esc(v.name||v.id);
+      return `
+      <tr class="row-link" id="vol-row-${i}" onclick="toggleVolRow(${i}, '${vn}')">
+        <td><span class="expand-caret">&#9656;</span>${esc(v.id||'—')}</td>
+        <td><strong style="color:var(--accent);">${esc(v.name||'—')}</strong></td>
         <td>${esc(fmtCap(v.capacity||v.mdisk_cap||v.real_capacity||''))}</td>
         <td>${esc(v.mdisk_grp_name||v.pool||'—')}</td>
         <td>${statusBadge(v.status||'online')}</td>
         <td><span class="badge badge-grey">${esc(v.type||'—')}</span></td>
-      </tr>`).join('');
+      </tr>
+      <tr class="detail-row" id="vol-detail-${i}" style="display:none;">
+        <td colspan="6"><div class="detail-inner" id="vol-detail-inner-${i}"></div></td>
+      </tr>`;
+    }).join('');
   }catch(err){tbody.innerHTML=`<tr><td colspan="6" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
 }
+
 
 /* Mappings */
 async function loadMappings(){
@@ -712,10 +845,10 @@ async function loadMappings(){
     if(!rows.length){tbody.innerHTML='<tr><td colspan="4" class="muted center">No mappings.</td></tr>';return;}
     tbody.innerHTML=rows.map(m=>`
       <tr>
-        <td>${esc(m.host_name||m.host||'—')}</td>
-        <td>${esc(m.vdisk_name||m.volume||'—')}</td>
-        <td>${esc(m.scsi_id||'—')}</td>
-        <td>${esc(m.lun_id||'—')}</td>
+        <td>${esc(_mapHost(m)||'—')}</td>
+        <td>${esc(_mapVol(m)||'—')}</td>
+        <td>${esc(m.SCSI_id||m.scsi_id||'—')}</td>
+        <td>${esc(m.lun_id||m.SCSI_id||m.scsi_id||'—')}</td>
       </tr>`).join('');
   }catch(err){tbody.innerHTML=`<tr><td colspan="4" class="error-text">Error: ${esc(err.message)}</td></tr>`;}
 }
@@ -762,12 +895,15 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape') $('detail-drawer-ov
    IBM Storage Virtualize lshostvdiskmap fields: host_name, host_id, name (=vdisk name),
    vdisk_name, vdisk_id, id, SCSI_id, lun_id, etc. */
 function _mapHost(m){
-  return (m.host_name || m.host || m.hostname || '').trim();
+  // lshostvdiskmap concise view: "name" = HOST name, "id" = host id.
+  // Some firmware also expose host_name explicitly.
+  return (m.host_name || m.host || m.hostname || m.name || '').trim();
 }
 /* helper: get the vdisk-name field from a mapping row */
 function _mapVol(m){
-  // lshostvdiskmap: "name" field = vdisk name (short list), "vdisk_name" = full detail
-  return (m.vdisk_name || m.name || m.volume || m.vdisk || m.disk_name || '').trim();
+  // lshostvdiskmap: "vdisk_name" = volume name; never fall back to "name"
+  // because in this response "name" is the HOST name.
+  return (m.vdisk_name || m.volume || m.vdisk || m.disk_name || '').trim();
 }
 /* helper: normalise a mapping row into a canonical object for display */
 function _normMapping(m){
@@ -792,6 +928,172 @@ async function _fetchAll(){
     if(dh.ok) _allHosts    = Array.isArray(dh.data) ? dh.data : [];
     if(dv.ok) _allVols     = Array.isArray(dv.data) ? dv.data : [];
   }catch(_){}
+}
+
+/* ═══════════════════════════════════════════════════
+   INLINE EXPANDABLE ROWS
+═══════════════════════════════════════════════════ */
+
+/* Fetch host port (WWPN / iSCSI IQN) details from lshostports */
+async function _fetchHostPorts(){
+  try{
+    const r = await fetch('/api/storage/hostports');
+    const d = await r.json();
+    if(d.ok) _allHostPorts = Array.isArray(d.data) ? d.data : [];
+  }catch(_){ _allHostPorts = []; }
+}
+
+/* Format a WWPN into colon-separated groups for readability */
+function _fmtWwpn(w){
+  const s = String(w||'').replace(/[^0-9a-fA-F]/g,'');
+  if(s.length !== 16) return String(w||'—');
+  return s.match(/.{2}/g).join(':').toUpperCase();
+}
+
+/* ── Host row → port details (WWPNs / IQNs) from lshostports ── */
+async function toggleHostRow(idx, hostName){
+  const row    = $('host-row-'+idx);
+  const detail = $('host-detail-'+idx);
+  const inner  = $('host-detail-inner-'+idx);
+  if(!row || !detail || !inner) return;
+
+  const isOpen = detail.style.display !== 'none';
+  if(isOpen){
+    detail.style.display='none';
+    row.classList.remove('expanded');
+    return;
+  }
+
+  row.classList.add('expanded');
+  detail.style.display='';
+  inner.innerHTML='<div class="muted"><span class="spinner-sm"></span>&nbsp; Loading host details…</div>';
+
+  // Fetch ports (lshostports) and mappings/hosts/volumes in parallel
+  await Promise.all([_fetchHostPorts(), _fetchAll()]);
+
+  const hostInfo = _allHosts.find(h=>(h.name||h.id||'').trim()===hostName) || {};
+  const hostId   = String(hostInfo.id||'').trim();
+
+  // lshostports rows: host_id, host_name, WWPN / iscsi_name, type, status, node_logged_in_count
+  const ports = _allHostPorts.filter(p=>{
+    const pn = String(p.host_name||p.name||'').trim();
+    const pi = String(p.host_id||p.id||'').trim();
+    return pn === hostName || (hostId && pi === hostId);
+  });
+
+  // lshostvdiskmap rows matched to this host
+  const maps = _allMappings.filter(m=>{
+    const mh = _mapHost(m);
+    const mi = String(m.host_id||'').trim();
+    return mh === hostName || (hostId && mi === hostId);
+  });
+
+  let html = '';
+
+  // ── Section 1: Host Ports (WWPNs / IQNs) ──
+  html += `<div class="detail-title">Host Ports (${ports.length}) — Host: ${esc(hostName)}</div>`;
+  if(!ports.length){
+    html += '<p class="muted" style="font-size:12px;">No ports found for this host.</p>';
+  } else {
+    html += '<div style="margin-bottom:10px;">' + ports.map(p=>{
+      const wwpn = p.WWPN || p.wwpn;
+      const iqn  = p.iscsi_name || p.iSCSI_name || p.IQN;
+      const val  = wwpn ? _fmtWwpn(wwpn) : (iqn || '—');
+      return `<span class="map-badge">${esc(val)}</span>`;
+    }).join('') + '</div>';
+
+    html += `<div style="overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>WWPN / IQN</th><th>Type</th><th>Status</th><th>Logins</th></tr></thead><tbody>`;
+    ports.forEach(p=>{
+      const wwpn = p.WWPN || p.wwpn;
+      const iqn  = p.iscsi_name || p.iSCSI_name || p.IQN;
+      const val  = wwpn ? _fmtWwpn(wwpn) : (iqn || '—');
+      const ptype = p.type || (wwpn ? 'fc' : (iqn ? 'iscsi' : '—'));
+      const logins = p.node_logged_in_count || p.login_count || '—';
+      html += `<tr>
+        <td style="font-family:ui-monospace,Menlo,Consolas,monospace;">${esc(val)}</td>
+        <td><span class="badge badge-blue">${esc(ptype)}</span></td>
+        <td>${statusBadge(p.status||'—')}</td>
+        <td>${esc(logins)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // ── Section 2: Mapped Volumes ──
+  html += `<div class="detail-title" style="margin-top:16px;">Mapped Volumes (${maps.length})</div>`;
+  if(!maps.length){
+    html += '<p class="muted" style="font-size:12px;">No volumes mapped to this host.</p>';
+  } else {
+    html += `<div style="overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>Volume Name</th><th>SCSI ID (LUN)</th><th>Volume ID</th><th>Capacity</th><th>Pool</th></tr></thead><tbody>`;
+    maps.forEach(m=>{
+      const vn = _mapVol(m);
+      const volInfo = _allVols.find(v=>(v.name||v.id||'').trim()===vn) || {};
+      const cap = fmtCap(volInfo.capacity||volInfo.mdisk_cap||volInfo.real_capacity||'');
+      const scsi = m.SCSI_id || m.scsi_id || m.lun_id || '—';
+      html += `<tr>
+        <td><strong>${esc(vn||'—')}</strong></td>
+        <td>${esc(scsi)}</td>
+        <td>${esc(m.vdisk_id||volInfo.id||'—')}</td>
+        <td>${esc(cap)}</td>
+        <td>${esc(volInfo.mdisk_grp_name||volInfo.pool||'—')}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+
+  inner.innerHTML = html;
+}
+
+/* ── Volume row → mapped hosts (inline) ── */
+async function toggleVolRow(idx, volName){
+  const row    = $('vol-row-'+idx);
+  const detail = $('vol-detail-'+idx);
+  const inner  = $('vol-detail-inner-'+idx);
+  if(!row || !detail || !inner) return;
+
+  const isOpen = detail.style.display !== 'none';
+  if(isOpen){
+    detail.style.display='none';
+    row.classList.remove('expanded');
+    return;
+  }
+
+  row.classList.add('expanded');
+  detail.style.display='';
+  inner.innerHTML='<div class="muted"><span class="spinner-sm"></span>&nbsp; Loading mapped hosts…</div>';
+
+  await _fetchAll();
+  const maps = _allMappings.filter(m => _mapVol(m) === volName);
+
+  let html = `<div class="detail-title">Mapped Hosts (${maps.length}) — Volume: ${esc(volName)}</div>`;
+  if(!maps.length){
+    html += '<p class="muted" style="font-size:12px;">This volume is not mapped to any host.</p>';
+    html += '<div style="margin-top:4px;"><span class="map-badge">Unmapped</span></div>';
+  } else {
+    // Quick badge summary of mapped hosts
+    const hostNames = [...new Set(maps.map(m=>_mapHost(m)).filter(Boolean))];
+    html += '<div style="margin-bottom:10px;">' +
+      hostNames.map(h=>`<span class="map-badge">${esc(h)}</span>`).join('') + '</div>';
+
+    html += `<div style="overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>Host Name</th><th>SCSI ID (LUN)</th><th>Host ID</th><th>Host Type</th><th>Status</th></tr></thead><tbody>`;
+    maps.forEach(m=>{
+      const hn    = _mapHost(m);
+      const hInfo = _allHosts.find(h=>(h.name||h.id||'').trim()===hn) || {};
+      const scsi  = m.SCSI_id || m.scsi_id || m.lun_id || '—';
+      html += `<tr>
+        <td><strong>${esc(hn||'—')}</strong></td>
+        <td>${esc(scsi)}</td>
+        <td>${esc(m.host_id||hInfo.id||'—')}</td>
+        <td><span class="badge badge-blue">${esc(hInfo.type||hInfo.host_type||'—')}</span></td>
+        <td>${statusBadge(hInfo.status||'—')}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  inner.innerHTML = html;
 }
 
 /* ── Host → Mapped Disks ── */
@@ -959,7 +1261,13 @@ $('add-host-form').addEventListener('submit',async e=>{
   btn.innerHTML='<span class="spinner-sm"></span>&nbsp; Registering…';
   const wwpns=[...document.querySelectorAll('.wwpn-entry')].map(i=>i.value.trim()).filter(Boolean);
   const iqns=[...document.querySelectorAll('.iqn-entry')].map(i=>i.value.trim()).filter(Boolean);
-  const body={name:$('h-name').value.trim(),type:$('h-type').value,wwpns,iqns};
+  const body={
+    name:     $('h-name').value.trim(),
+    protocol: $('h-protocol').value,
+    type:     $('h-type').value,
+    iogrp:    $('h-iogrp').value.trim(),
+    wwpns, iqns,
+  };
   try{
     const r=await fetch('/api/storage/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
@@ -1024,7 +1332,7 @@ $('map-vol-form').addEventListener('submit',async e=>{
   try{
     const r=await fetch('/api/storage/mappings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
-    if(d.ok){ showResult('mapvol-result','success',`Volume "${body.volume}" mapped to host "${body.host}".`); loadMappings(); }
+    if(d.ok){ showResult('mapvol-result','success',`Volume "${body.volume}" mapped to host "${body.host}".`); loadHosts(); loadVolumes(); }
     else { showResult('mapvol-result','error',d.error||'Failed.'); }
   }catch(err){ showResult('mapvol-result','error','Network error: '+err.message); }
   finally{ btn.disabled=false; btn.textContent='Map Volume'; }

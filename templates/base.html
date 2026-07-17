@@ -82,7 +82,9 @@
     <button id="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
     <h1 class="page-title">{% block page_title %}{% endblock %}</h1>
     <div class="topbar-right">
+      {% if request.path not in ['/vfc-map', '/zoning', '/san-switches', '/storage'] %}
       <select id="hmc-selector" title="Active HMC"></select>
+      {% endif %}
     </div>
   </div>
 
