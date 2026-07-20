@@ -950,7 +950,7 @@ function openConsole(lparName) {
   }, 50);
 
   // Show a loading indicator immediately so the user sees feedback
-  _consoleTerm.writeln(`\x1b[33m[DeployAIX] Loading SSH connection to HMC…\x1b[0m`);
+  _consoleTerm.writeln(`\x1b[33m[PowerPilot] Loading SSH connection to HMC…\x1b[0m`);
   _consoleTerm.writeln(`\x1b[2m[LPAR: ${lparName}  |  System: ${sysId}]\x1b[0m`);
   _consoleTerm.writeln(`\x1b[2m[Please wait, establishing mkvterm session…]\x1b[0m`);
 
@@ -990,7 +990,7 @@ function openConsole(lparName) {
   _consoleSocket.on("vterm_ready", (data) => {
     _consoleSetStatus("● Connected", "status-connected");
     _consoleTerm.writeln(
-      `\x1b[32m[DeployAIX] Connected to LPAR console: ${data.lpar_name}\x1b[0m`
+      `\x1b[32m[PowerPilot] Connected to LPAR console: ${data.lpar_name}\x1b[0m`
     );
     _consoleTerm.writeln(
       `\x1b[2m[Tip: press Ctrl+] then Enter to exit the HMC vterm session]\x1b[0m`
@@ -1020,7 +1020,7 @@ function openConsole(lparName) {
     _consoleSetStatus("Disconnected", "status-closed");
     if (_consoleTerm) {
       _consoleTerm.writeln(
-        `\r\n\x1b[33m[DeployAIX] Connection closed (${reason})\x1b[0m`
+        `\r\n\x1b[33m[PowerPilot] Connection closed (${reason})\x1b[0m`
       );
     }
   });

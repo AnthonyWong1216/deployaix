@@ -1,5 +1,5 @@
 """
-DeployAIX - HMC & Power Server Management Web Application
+PowerPilot - HMC & Power Server Management Web Application
 Flask backend with SSH and HMC REST API support
 """
 
@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "deployaix-dev-secret-change-in-prod")
+app.secret_key = os.environ.get("SECRET_KEY", "powerpilot-dev-secret-change-in-prod")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 ssh_manager = SSHManager()
@@ -331,9 +331,9 @@ def generate_ssh_key():
     data = request.get_json(force=True) or {}
     result = ssh_manager.generate_key(
         key_type=data.get("key_type", "ed25519"),
-        key_name=data.get("key_name", "id_deployaix"),
+        key_name=data.get("key_name", "id_powerpilot"),
         passphrase=data.get("passphrase", ""),
-        comment=data.get("comment", "deployaix"),
+        comment=data.get("comment", "powerpilot"),
     )
     return jsonify(result)
 

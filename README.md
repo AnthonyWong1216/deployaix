@@ -1,4 +1,4 @@
-# DeployAIX — HMC & Power Server Management Web App
+# PowerPilot — HMC & Power Server Management Web App
 
 A Flask web application for managing IBM HMC and Power servers from macOS.
 
@@ -10,7 +10,7 @@ A Flask web application for managing IBM HMC and Power servers from macOS.
 - **HMC REST API** — authenticate and query managed systems and LPARs
 - **LPAR Management** — activate, shutdown, soft-stop, and restart LPARs
 - **Managed Systems** — list Power servers managed by the HMC
-- Profiles stored in `~/.deployaix/hmcs.json`
+- Profiles stored in `~/.powerpilot/hmcs.json`
 
 ## Quick Start (macOS)
 
@@ -30,12 +30,12 @@ Open **http://localhost:5001** in your browser.
 ## Project Layout
 
 ```
-deployaix/
+powerpilot/
 ├── app.py                  Flask application & routes
 ├── requirements.txt
 ├── modules/
 │   ├── hmc_api.py          HMC REST API client (HTTPS port 443)
-│   ├── hmc_store.py        Persistent HMC profile store (~/.deployaix)
+│   ├── hmc_store.py        Persistent HMC profile store (~/.powerpilot)
 │   └── ssh_manager.py      Paramiko SSH: key gen, push, test, terminal
 ├── templates/
 │   ├── base.html           Layout with left-nav sidebar

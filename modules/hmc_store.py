@@ -1,6 +1,6 @@
 """
 Simple file-backed store for HMC connection profiles.
-Stored in ~/.deployaix/hmcs.json
+Stored in ~/.powerpilot/hmcs.json
 """
 
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STORE_DIR = Path.home() / ".deployaix"
+STORE_DIR = Path.home() / ".powerpilot"
 STORE_FILE = STORE_DIR / "hmcs.json"
 
 

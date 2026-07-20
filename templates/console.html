@@ -168,7 +168,7 @@ window.addEventListener("resize", () => {
 });
 
 // ── Show immediate loading feedback ──────────────────────
-term.writeln("\x1b[33m[DeployAIX] Loading SSH connection to HMC…\x1b[0m");
+term.writeln("\x1b[33m[PowerPilot] Loading SSH connection to HMC…\x1b[0m");
 term.writeln(`\x1b[2m[LPAR: ${LPAR_NAME}  |  System: ${SYSTEM_ID}]\x1b[0m`);
 term.writeln("\x1b[2m[Please wait, establishing mkvterm session…]\x1b[0m");
 
@@ -191,7 +191,7 @@ sock.on("connect", () => {
 
 sock.on("vterm_ready", (data) => {
   setStatus("● Connected", "st-connected");
-  term.writeln(`\x1b[32m[DeployAIX] Connected to LPAR console: ${data.lpar_name}\x1b[0m`);
+  term.writeln(`\x1b[32m[PowerPilot] Connected to LPAR console: ${data.lpar_name}\x1b[0m`);
   term.writeln("\x1b[2m[Tip: Ctrl+] then Enter exits the HMC vterm session]\x1b[0m");
   try { fitAddon.fit(); } catch(e) {}
   sock.emit("vterm_resize", { cols: term.cols, rows: term.rows });
@@ -210,7 +210,7 @@ sock.on("vterm_error", (data) => {
 
 sock.on("disconnect", (reason) => {
   setStatus("Disconnected", "st-closed");
-  term.writeln(`\r\n\x1b[33m[DeployAIX] Connection closed (${reason})\x1b[0m`);
+  term.writeln(`\r\n\x1b[33m[PowerPilot] Connection closed (${reason})\x1b[0m`);
 });
 
 sock.on("connect_error", (err) => {

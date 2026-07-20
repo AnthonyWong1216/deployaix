@@ -1,6 +1,6 @@
 """
 Simple file-backed store for SAN switch connection profiles.
-Stored in ~/.deployaix/san_switches.json
+Stored in ~/.powerpilot/san_switches.json
 Mirrors the pattern used by hmc_store.HMCStore.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STORE_DIR = Path.home() / ".deployaix"
+STORE_DIR = Path.home() / ".powerpilot"
 STORE_FILE = STORE_DIR / "san_switches.json"
 
 

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════
-   DeployAIX — app.js
+   PowerPilot — app.js
    Global utilities: HMC selector, sidebar toggle, toast
    ═══════════════════════════════════════════════════════ */
 

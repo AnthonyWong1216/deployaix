@@ -38,7 +38,7 @@ class HMCApiClient:
         headers = {
             "X-API-Session": self.session_id or "",
             "Accept": accept,
-            "X-Audit-Memento": "DeployAIX",
+            "X-Audit-Memento": "PowerPilot",
         }
         logger.debug("GET %s", url)
         return self.session.get(url, headers=headers, timeout=timeout)
@@ -61,7 +61,7 @@ class HMCApiClient:
         headers = {
             "Content-Type": "application/vnd.ibm.powervm.web+xml; type=LogonRequest",
             "Accept": "application/vnd.ibm.powervm.web+xml; type=LogonResponse",
-            "X-Audit-Memento": "DeployAIX",
+            "X-Audit-Memento": "PowerPilot",
         }
         try:
             r = self.session.put(url, data=body, headers=headers, timeout=15)

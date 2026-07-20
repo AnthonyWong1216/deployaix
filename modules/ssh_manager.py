@@ -52,8 +52,8 @@ class SSHManager:
                 })
         return keys
 
-    def generate_key(self, key_type="ed25519", key_name="id_deployaix",
-                     passphrase="", comment="deployaix") -> dict:
+    def generate_key(self, key_type="ed25519", key_name="id_powerpilot",
+                     passphrase="", comment="powerpilot") -> dict:
         SSH_DIR.mkdir(mode=0o700, exist_ok=True)
         key_path = SSH_DIR / key_name
         if key_path.exists():
