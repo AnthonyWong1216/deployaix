@@ -500,25 +500,12 @@ function renderDetail(d) {
         <span class="adapter-label">vFC  Slot ${e.slot}</span>
 ${wwpns.map(w => `
   <span class="adapter-detail wwpn">
-    WWPN 
-    <code title="Copy Formatted" onclick="copyToClipboard('${fmtWWPN(w)}')" style="cursor:pointer" data-copy="${fmtWWPN(w)}">
-      ${fmtWWPN(w)} 
-      <svg viewBox="0 0 24 24" width="24" height="24" style="display:inline-block; vertical-align:middle; margin-left:6px; opacity:0.6;" fill="none" stroke="currentColor" stroke-width="4">
-        <rect x="9" y="9" width="6" height="6"></rect>
-        <circle cx="9.5" cy="9.5" r="1.5"></circle>
-        <circle cx="14.5" cy="14.5" r="1.5"></circle>
-      </svg>
-    </code>
-    or 
-    <code title="Copy Raw" onclick="copyToClipboard('${w}')" style="cursor:pointer" data-copy="${w}">
-      ${w} 
-      <svg viewBox="0 0 24 24" width="24" height="24" style="display:inline-block; vertical-align:middle; margin-left:6px; opacity:0.6;" fill="none" stroke="currentColor" stroke-width="4">
-        <rect x="9" y="9" width="6" height="6"></rect>
-        <circle cx="9.5" cy="9.5" r="1.5"></circle>
-        <circle cx="14.5" cy="14.5" r="1.5"></circle>
-      </svg>
-    </code>
+    WWPN
+    <code title="Copy Formatted" onclick="copyToClipboard('${fmtWWPN(w)}')" style="cursor:pointer" data-copy="${fmtWWPN(w)}">${fmtWWPN(w)}</code>${copyIcon(fmtWWPN(w))}
+    &nbsp;or&nbsp;
+    <code title="Copy Raw" onclick="copyToClipboard('${fmtWWPNraw(w)}')" style="cursor:pointer" data-copy="${fmtWWPNraw(w)}">${fmtWWPNraw(w)}</code>${copyIcon(fmtWWPNraw(w))}
   </span>`).join("")}
+
 
         <span class="adapter-detail">→ <strong>${e.remote_lpar||"—"}</strong> slot ${e.remote_slot||"—"}</span>
       </div>
@@ -539,25 +526,49 @@ ${wwpns.map(w => `
   //const phyioAll = (phyioRows) || none;
 
   // ── Physical FC ──
-  const phyFcRows = (d.phyfc||[]).map(e => `
+  // Each card (e.g. C7) may expose several physical ports (T0/T1); the backend
+  // groups every port of a card into e.ports.  Render one block per port so
+  // all WWPNs / speeds / link states are shown.
+  const phyFcRows = (d.phyfc||[]).map(e => {
+    const ports = (e.ports && e.ports.length) ? e.ports : [{
+      dev: e.device, wwpn: e.wwpn, link: e.link_status,
+      speed: e.port_speed, net_addr: e.network_address,
+      port: e.port_index, location: e.location,
+    }];
+    const portBlocks = ports.map(p => `
+      <div class="adapter-detail" style="margin-top:6px">
+        <strong>${p.dev || "fcs?"}</strong>
+        &nbsp;Port <code>${p.port || "—"}</code>
+        ${p.link ? `<span class="badge ${linkBadgeClass(p.link)}" style="margin-left:6px;font-size:10px">${p.link}</span>` : ""}
+        ${p.speed ? `&nbsp;·&nbsp; Speed <strong>${p.speed}</strong>` : ""}
+      </div>
+      <div class="adapter-detail" style="padding-left:2px">Location <code>${p.location || e.location || "—"}</code></div>
+      ${p.wwpn ? `
+      <div class="adapter-detail wwpn" style="padding-left:2px">WWPN
+        <code style="cursor:pointer" title="Copy" onclick="copyToClipboard('${fmtWWPN(p.wwpn)}')">${fmtWWPN(p.wwpn)}</code>${copyIcon(fmtWWPN(p.wwpn))}
+        &nbsp;or&nbsp;
+        <code style="cursor:pointer" title="Copy" onclick="copyToClipboard('${fmtWWPNraw(p.wwpn)}')">${fmtWWPNraw(p.wwpn)}</code>${copyIcon(fmtWWPNraw(p.wwpn))}
+      </div>` : `
+      <div class="adapter-detail wwpn" style="padding-left:2px">WWPN
+        <code>n/a (VIOS query returned no data)</code>
+      </div>`}
+      ${p.net_addr ? `<div class="adapter-detail wwpn" style="padding-left:2px">Network Address
+        <code style="cursor:pointer" title="Copy" onclick="copyToClipboard('${fmtWWPN(p.net_addr)}')">${fmtWWPN(p.net_addr)}</code>${copyIcon(fmtWWPN(p.net_addr))}
+        &nbsp;or&nbsp;
+        <code style="cursor:pointer" title="Copy" onclick="copyToClipboard('${fmtWWPNraw(p.net_addr)}')">${fmtWWPNraw(p.net_addr)}</code>${copyIcon(fmtWWPNraw(p.net_addr))}
+      </div>` : ""}`).join("");
+
+    return `
     <div class="adapter-row">
       ${svgIcon("phyfc")}
       <div class="adapter-info">
-        <span class="adapter-label">FC HBA ${e.device ? e.device : ""} &nbsp; Adapter ${e.adapter_id||"—"} &nbsp; Port ${e.port_index||"—"}
-          ${e.link_status ? `<span class="badge ${/up/i.test(e.link_status)?"badge-green":"badge-red"}" style="margin-left:6px;font-size:10px">${e.link_status}</span>` : ""}
+        <span class="adapter-label">FC HBA &nbsp; Adapter ${e.adapter_id||"—"}
+          ${e.description ? ` &nbsp;·&nbsp; ${e.description}` : ""}
         </span>
-        <span class="adapter-detail">Location <code>${e.location||"—"}</code></span>
-        ${e.description ? `<span class="adapter-detail">${e.description}</span>` : ""}
-        <span class="adapter-detail wwpn">WWP
-          <code title="Copy Formatted" onclick="copyToClipboard('${e.wwpn ? fmtWWPN(e.wwpn) : ""}')" style="cursor:pointer">
-            ${e.wwpn ? fmtWWPN(e.wwpn) : "n/a (VIOS query returned no data)"}
-          </code>
-        </span>
+        ${portBlocks}
       </div>
-    </div>`).join("") || none;
-
-
-
+    </div>`;
+  }).join("") || none;
 
   // ── Error notes (only real errors, not "no resource" noise) ──
   const errNotes = Object.entries(d.errors||{})
@@ -572,6 +583,7 @@ ${wwpns.map(w => `
     <!-- ── CPU ── -->
     <div class="detail-tile">
       <div class="detail-tile-header">${svgIcon("cpu")} <span>Processor</span>
+
         <span class="sharing-badge ${isShared?"badge-orange":"badge-blue"}">${sharing}</span>
       </div>
       <div class="resource-bar-wrap">
@@ -669,6 +681,26 @@ function fmtWWPN(s) {
   if (c.length === 16) return c.match(/.{2}/g).join(":").toUpperCase();
   return s;
 }
+// WWPN without colons (bare uppercase hex), e.g. 100070B7E4336399
+function fmtWWPNraw(s) {
+  if (!s || s === "—") return "—";
+  const c = s.replace(/[^0-9a-fA-F]/g,"");
+  if (c.length === 16) return c.toUpperCase();
+  return s;
+}
+// Small "copy" text icon rendered after a WWPN value.
+function copyIcon(val) {
+  return `<span class="copy-link" title="Copy" style="cursor:pointer;margin-left:5px;font-size:11px;color:#0969da"
+            onclick="copyToClipboard('${val}')">⧉ copy</span>`;
+}
+// Link-status badge colour: green for "up", red for "down", grey otherwise.
+function linkBadgeClass(link) {
+  const s = (link || "").toLowerCase();
+  if (s.includes("up"))   return "badge-green";
+  if (s.includes("down")) return "badge-red";
+  return "badge-grey";
+}
+
 
 function svgIcon(type) {
   const icons = {

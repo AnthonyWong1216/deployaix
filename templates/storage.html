@@ -223,7 +223,25 @@
   /* No-result row */
   .no-filter-match { display:none; }
   .no-filter-match.visible { display:block; padding:8px 2px; font-size:12px; color:var(--muted); }
+
+  /* ── Saved storage systems ── */
+  .saved-sys-row {
+    display:flex; align-items:center; gap:10px;
+    border:1px solid var(--border); border-radius:var(--radius);
+    padding:8px 10px; margin-bottom:6px; cursor:pointer;
+    background:var(--surface); transition:border-color .15s, background .15s;
+  }
+  .saved-sys-row:hover { border-color:var(--accent); background:var(--blue-bg); }
+  .saved-sys-main { flex:1; min-width:0; }
+  .saved-sys-ip   { font-size:13px; font-weight:700; color:var(--text); }
+  .saved-sys-user { font-size:11px; color:var(--muted); margin-top:1px; }
+  .saved-sys-del {
+    background:none; border:none; color:var(--muted); cursor:pointer;
+    font-size:14px; padding:2px 6px; border-radius:4px; flex-shrink:0;
+  }
+  .saved-sys-del:hover { color:var(--red); background:var(--red-bg); }
 </style>
+
 {% endblock %}
 
 {% block content %}
@@ -246,7 +264,17 @@
       </div>
     </div>
     <div id="login-error" class="login-error"></div>
+
+    <!-- Saved storage systems (IP + username; password is never stored) -->
+    <div id="saved-systems-wrap" style="display:none;margin-bottom:18px;">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:8px;">
+        Saved Systems
+      </div>
+      <div id="saved-systems-list"></div>
+    </div>
+
     <form id="storage-login-form" autocomplete="off">
+
       <div class="row g-3">
         <div class="col-12">
           <label class="form-label">Storage IP / Hostname <span class="req">*</span></label>
@@ -672,9 +700,53 @@ function onLoginSuccess(d){
 (async()=>{
   try{
     const r=await fetch('/api/storage/session'); const d=await r.json();
-    if(d.ok&&d.connected) onLoginSuccess({storage_ip:d.storage_ip,username:d.username,token:d.token});
+    if(d.ok&&d.connected){ onLoginSuccess({storage_ip:d.storage_ip,username:d.username,token:d.token}); return; }
   }catch(_){}
+  // Not connected — show the saved-systems quick-connect list.
+  loadSavedSystems();
 })();
+
+/* ═══════════════════════════════════════════════════
+   SAVED STORAGE SYSTEMS (IP + username only, no password)
+═══════════════════════════════════════════════════ */
+async function loadSavedSystems(){
+  const wrap=$('saved-systems-wrap'), list=$('saved-systems-list');
+  if(!wrap||!list) return;
+  try{
+    const r=await fetch('/api/storage/systems'); const d=await r.json();
+    const rows=(d.ok && Array.isArray(d.data)) ? d.data : [];
+    if(!rows.length){ wrap.style.display='none'; list.innerHTML=''; return; }
+    list.innerHTML=rows.map(s=>`
+      <div class="saved-sys-row" title="Click to fill IP & username"
+           onclick="pickSavedSystem('${esc(s.storage_ip)}','${esc(s.username)}')">
+        <div class="saved-sys-main">
+          <div class="saved-sys-ip">${esc(s.storage_ip)}</div>
+          <div class="saved-sys-user">${esc(s.username)}</div>
+        </div>
+        <button type="button" class="saved-sys-del" title="Forget this system"
+                onclick="event.stopPropagation();deleteSavedSystem('${esc(s.id)}')">&#10005;</button>
+      </div>`).join('');
+    wrap.style.display='block';
+  }catch(_){ wrap.style.display='none'; }
+}
+
+/* Fill the IP + username fields and focus the password so the user only
+   needs to type the password to reconnect. */
+function pickSavedSystem(ip, user){
+  $('f-ip').value=ip;
+  $('f-user').value=user;
+  $('f-pass').value='';
+  $('f-pass').focus();
+}
+
+async function deleteSavedSystem(id){
+  if(!confirm('Forget this saved storage system?\n(The IP and username record will be removed.)')) return;
+  try{
+    await fetch('/api/storage/systems/'+encodeURIComponent(id),{method:'DELETE'});
+  }catch(_){}
+  loadSavedSystems();
+}
+
 
 /* ── API token (masked by default, revealed via eye icon) ── */
 function setApiToken(token){

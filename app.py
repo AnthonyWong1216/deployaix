@@ -4,8 +4,10 @@ Flask backend with SSH and HMC REST API support
 """
 
 import os
+import re
 import json
 import logging
+
 from flask import Flask, render_template, request, jsonify, session
 from flask_socketio import SocketIO, emit
 
@@ -14,6 +16,8 @@ from modules.hmc_api import HMCApiClient
 from modules.hmc_store import HMCStore
 from modules.san_store import SANStore
 from modules.san_manager import SANManager
+from modules.storage_store import StorageStore
+
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -27,6 +31,8 @@ ssh_manager = SSHManager()
 hmc_store = HMCStore()
 san_store = SANStore()
 san_manager = SANManager(ssh_manager)
+storage_store = StorageStore()
+
 
 
 # ──────────────────────────────────────────────────────────
@@ -653,64 +659,104 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
                 "port_index":  port_index or "—",
                 "location":    location or "—",
                 "description": r.get("description", ""),
-                "wwpn":        "",   # filled in by _enrich_phyfc_wwpn
+                "wwpn":        "",   # filled in by _enrich_phyfc_wwpn (World Wide Port Name)
+                "port_speed":  "",   # filled in by _enrich_phyfc_wwpn
+                "network_address": "",  # filled in by _enrich_phyfc_wwpn (lsdev -vpd)
             })
         return out
 
-    def _norm_loc(loc):
-        """Normalise a physical location code for matching between the HMC
-        (lshwres phys_loc) and the VIOS (lscfg second column).
 
-        The HMC often prefixes the code with the machine/serial (e.g.
-        ``U78C9.001.WXYZ123-P1-C11-T1``) while lscfg reports the same trailing
-        ``...-P1-C11-T1``.  Compare on the ``-P.../-C.../-T...`` tail so both
-        representations line up.
+    def _norm_loc(loc):
+        """Normalise a physical location code to its card slot key ("C<n>") for
+        matching between the HMC (lshwres phys_loc/drc_name) and the VIOS
+        (lsdev -vpd "Hardware Location Code").
+
+        The HMC side is often reported as just the slot label (e.g. ``C11``)
+        while the VIOS reports the full code (e.g.
+        ``U78C9.001.WXYZ123-P1-C11-T1``).  Both always contain the ``C<n>``
+        card token, so we key on that.  We also keep any ``T<n>`` port token
+        so a multi-port card's ports don't collide.
         """
         loc = (loc or "").strip().upper()
-        # Keep everything from the first '-P' onwards; that tail is stable
+        card = ""
+        for token in loc.replace(".", "-").split("-"):
+            token = token.strip()
+            if token.startswith("C") and token[1:].isdigit():
+                card = token
+        if card:
+            return card
+        # Fall back to the '-P...' tail if no card token was found.
         idx = loc.find("-P")
         return loc[idx:] if idx != -1 else loc
 
+
+
+    # Captures the VIOS enrichment queries so they appear in the ?debug=1 view.
+    phyfc_debug = {}
+
     def _enrich_phyfc_wwpn(phyfc_rows):
-        """Fill in each physical FC port's WWPN + link status by querying the VIOS.
 
-        Collection method (as confirmed on the VIOS):
+        """Fill in each physical FC port's WWPN, link status, port speed and
+        network address by querying the VIOS.
 
-            viosvrcmd -m <system> -p <VIOS_lpar> -c "fcstat fcsX"
 
-        The fcstat output contains::
+        Collection method (as confirmed on the VIOS), equivalent to::
 
-            ...
-            World Wide Node Name: 0x2000F4C7AA652388   <-- WWPN (node name)
-            ...
+            for i in $(viosvrcmd -m <ms> -p <VIOS> \\
+                          -c "lsdev -type adapter" | grep fcs | grep Available \\
+                          | cut -d' ' -f1); do
+                viosvrcmd -m <ms> -p <VIOS> -t 1 -c "fcstat -d $i" \\
+                    | grep -E "World Wide Port Name|Attention Type|Port Speed"
+                viosvrcmd -m <ms> -p <VIOS> -c "lsdev -dev $i -vpd" \\
+                    | grep -E "Hardware Location Code|Network Address"
+            done
+
+        The ``fcstat -d fcsX`` output contains::
+
+            World Wide Port Name: 0x100000109B5A1234   <-- WWPN (port name)
             Attention Type:   Link Up                  <-- link status
+            Port Speed (running):   16 GBIT            <-- negotiated speed
 
-        Because ``fcstat`` does not print the physical location code, we also
-        run ``lscfg -vl fcsX`` for every device to obtain the location code and
-        match it back to the ``lshwres`` phyfc rows.
+        The ``lsdev -dev fcsX -vpd`` output contains::
+
+            Hardware Location Code......U78..-P1-C2-T1  <-- physical location
+            Network Address.............100000109B5A1234 <-- WWPN-format address
 
         We:
-          1. list the fcs* devices on the VIOS (lsdev),
-          2. run ``lscfg -vl fcsX`` (location) and ``fcstat fcsX`` (WWPN + link)
-             for each device over a single batched SSH connection,
+          1. list the Available fcs* adapters on the VIOS
+             (lsdev -type adapter | grep fcs | grep Available),
+          2. run ``fcstat -d fcsX`` (WWPN + link + speed) and
+             ``lsdev -dev fcsX -vpd`` (location code + network address) for
+             each device over a single batched SSH connection,
           3. match each device's location code to the lshwres phyfc row and
-             copy in the World Wide Node Name and link status.
+             copy in the World Wide Port Name, link status, port speed and
+             network address.
         """
+
         if not phyfc_rows:
             return phyfc_rows
 
         # The detail view is per-LPAR; treat that LPAR as the VIOS to query.
         vios = lpar_id
 
-        # ── 1. list fcs* devices on the VIOS ──
+        # ── 1. list Available fcs* adapters on the VIOS ──
+        # viosvrcmd -m <ms> -p <VIOS> -c "lsdev -type adapter" | grep fcs | grep Available
         lsdev_cmd = (f'viosvrcmd -m {m} -p "{vios}" '
-                     f'-c "lsdev -type adapter -field name" | grep -i fcs')
+                     f'-c "lsdev -type adapter" | grep fcs | grep Available')
         lsdev_res = ssh_manager.run_hmc_command(
             host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
             username=hmc.get("username", "hscroot"),
             key_path=hmc.get("key_path") or None,
             command=lsdev_cmd,
         )
+        # Expose the enrichment queries in the debug view for diagnosis.
+        phyfc_debug["phyfc_vios_lsdev (list fcs adapters)"] = {
+            "ok": lsdev_res.get("ok", False),
+            "output": lsdev_res.get("output", ""),
+            "error": lsdev_res.get("error") or lsdev_res.get("stderr") or "",
+            "command": lsdev_cmd,
+        }
+
         fcs_devs = []
         if lsdev_res.get("ok"):
             for line in lsdev_res["output"].splitlines():
@@ -721,45 +767,85 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
         if not fcs_devs:
             return phyfc_rows
 
-        # ── 2. lscfg (location) + fcstat (WWPN & link) per device, one batch ──
+        # ── 2. fcstat -d (WWPN + link + speed) and lsdev -vpd (location +
+        #        network address) per device, in one batched SSH connection.
+        #
+        #   viosvrcmd -m <ms> -p <VIOS> -t 1 -c "fcstat -d fcsX"
+        #       | grep -E "World Wide Port Name|Attention Type|Port Speed"
+        #   viosvrcmd -m <ms> -p <VIOS> -c "lsdev -dev fcsX -vpd"
+        #       | grep -E "Hardware Location Code|Network Address"
         batch_cmds = {}
         for dev in fcs_devs:
-            batch_cmds[f"loc::{dev}"] = (
-                f'viosvrcmd -m {m} -p "{vios}" -c "lscfg -vl {dev}"')
             batch_cmds[f"stat::{dev}"] = (
+                f'viosvrcmd -m {m} -p "{vios}" -t 1 '
+                f'-c "fcstat {dev}" '
+                f'| grep -E "World Wide Port Name|Attention Type|Port Speed"')
+
+            batch_cmds[f"vpd::{dev}"] = (
                 f'viosvrcmd -m {m} -p "{vios}" '
-                f'-c "fcstat {dev}" | grep -iE "World Wide Node Name|Attention Type"')
+                f'-c "lsdev -dev {dev} -vpd" '
+                f'| grep -E "Hardware Location Code|Network Address"')
         batch_raw = ssh_manager.run_hmc_commands_batch(
             host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
             username=hmc.get("username", "hscroot"),
             key_path=hmc.get("key_path") or None,
             commands=batch_cmds,
         )
+        # "fcstat fcsX" returns the World Wide Port Name / Attention Type /
+        # Port Speed only when the port is UP.  For a port whose link is DOWN
+        # the plain command times out / returns nothing, so we retry those
+        # devices with "fcstat -d fcsX" (diagnostic mode) which still reports
+        # the WWPN and link status for a down port.
+        retry_cmds = {}
+        for dev in fcs_devs:
+            r = batch_raw.get(f"stat::{dev}", {})
+            if not r.get("ok") or not (r.get("output") or "").strip():
+                retry_cmds[f"stat::{dev}"] = (
+                    f'viosvrcmd -m {m} -p "{vios}" '
+                    f'-c "fcstat -d {dev}" '
+                    f'| grep -E "World Wide Port Name|Attention Type|Port Speed"')
 
-        # ── 3. per device: location code (from lscfg) + wwpn/link (from fcstat)
+        if retry_cmds:
+            retry_raw = ssh_manager.run_hmc_commands_batch(
+                host=hmc["host"], port=int(hmc.get("ssh_port", 22)),
+                username=hmc.get("username", "hscroot"),
+                key_path=hmc.get("key_path") or None,
+                commands=retry_cmds,
+            )
+            for _k, _res in retry_raw.items():
+                if _res.get("ok") and (_res.get("output") or "").strip():
+                    batch_raw[_k] = _res
+                    batch_cmds[f"{_k} (retry fcstat -d)"] = retry_cmds[_k]
+
+
+        # Expose each fcstat / lsdev-vpd query in the debug view.
+        for _k, _cmd in batch_cmds.items():
+            _r = batch_raw.get(_k, {})
+            phyfc_debug[f"phyfc_vios {_k}"] = {
+                "ok": _r.get("ok", False),
+                "output": _r.get("output", ""),
+                "error": _r.get("error") or _r.get("stderr") or "",
+                "command": _cmd,
+            }
+
+
+        # ── 3. per device: parse WWPN/link/speed (fcstat) + location/network
+        #        address (lsdev -vpd)
+
         loc_to_info = {}
         for dev in fcs_devs:
-            # location code from lscfg header line
-            dev_loc = ""
-            loc_res = batch_raw.get(f"loc::{dev}", {})
-            if loc_res.get("ok"):
-                for line in loc_res["output"].splitlines():
-                    s = line.strip()
-                    if s.lower().startswith(dev.lower()):
-                        parts = s.split()
-                        if len(parts) >= 2:
-                            dev_loc = parts[1]
-                            break
-
-            # WWPN (World Wide Node Name) + link status from fcstat
+            # --- fcstat -d: World Wide Port Name / Attention Type / Port Speed
             wwpn = ""
             link = ""
+            speed = ""
+            speed_running = ""
+            speed_supported = ""
             stat_res = batch_raw.get(f"stat::{dev}", {})
             if stat_res.get("ok"):
                 for line in stat_res["output"].splitlines():
                     s = line.strip()
                     low = s.lower()
-                    if "world wide node name" in low:
+                    if "world wide port name" in low:
                         val = s.split(":", 1)[-1].strip()
                         # strip a leading 0x and keep hex digits only
                         val = val[2:] if val.lower().startswith("0x") else val
@@ -767,20 +853,96 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
                                        if ch in "0123456789abcdefABCDEF")
                     elif "attention type" in low:
                         link = s.split(":", 1)[-1].strip()
+                    elif "port speed" in low:
+                        # fcstat reports two "Port Speed" lines:
+                        #   Port Speed (supported): 32 GBIT
+                        #   Port Speed (running):   16 GBIT   (0 GBIT when down)
+                        val = s.split(":", 1)[-1].strip()
+                        if "running" in low:
+                            speed_running = val
+                        elif "supported" in low:
+                            speed_supported = val
+                        else:
+                            speed = val
+                # Prefer the running speed; if the link is down (running 0 GBIT
+                # or empty) show the supported speed so the panel is never blank.
+                def _is_zero(v):
+                    return (not v) or v.strip().split()[0] in ("0", "0.0")
+                if speed_running and not _is_zero(speed_running):
+                    speed = speed_running
+                elif speed_supported:
+                    # Link down: show supported speed, annotated.
+                    speed = (f"{speed_supported} (supported)"
+                             if _is_zero(speed_running) else speed_supported)
+                elif speed_running:
+                    speed = speed_running
+
+
+            # --- lsdev -vpd: Hardware Location Code / Network Address
+            # VPD lines use a dotted-fill label style, e.g.
+            #   Hardware Location Code......U78D5.001.ABC-P1-C11-T1
+            #   Network Address.............100000109B5A1234
+            # Split the label from the value on the run of 2+ dots.
+            dev_loc = ""
+            net_addr = ""
+            vpd_res = batch_raw.get(f"vpd::{dev}", {})
+            if vpd_res.get("ok"):
+                for line in vpd_res["output"].splitlines():
+                    s = line.strip()
+                    low = s.lower()
+                    if "hardware location code" in low:
+                        parts = re.split(r"\.{2,}", s, maxsplit=1)
+                        dev_loc = (parts[-1] if len(parts) > 1
+                                   else s.split(":", 1)[-1]).strip()
+                    elif "network address" in low:
+                        parts = re.split(r"\.{2,}", s, maxsplit=1)
+                        val = (parts[-1] if len(parts) > 1
+                               else s.split(":", 1)[-1]).strip()
+                        net_addr = "".join(ch for ch in val
+                                           if ch in "0123456789abcdefABCDEF")
+
+
+
+            # Fall back to the Network Address (a WWPN-format value) if fcstat
+            # did not return a World Wide Port Name.
+            if not wwpn and net_addr:
+                wwpn = net_addr
 
             if dev_loc:
-                loc_to_info[_norm_loc(dev_loc)] = {
+                # A single FC card (e.g. C7) usually has multiple ports
+                # (T0/T1), each with its own device / WWPN.  Group ports by
+                # the card slot key so all ports of a card can be shown.
+                # Derive the port token (T<n>) from the VPD location code.
+                port_token = ""
+                for t in dev_loc.replace(".", "-").split("-"):
+                    t = t.strip()
+                    if t.upper().startswith("T") and t[1:].isdigit():
+                        port_token = t.upper()
+                loc_to_info.setdefault(_norm_loc(dev_loc), []).append({
                     "dev": dev, "wwpn": wwpn, "link": link,
-                }
+                    "speed": speed, "net_addr": net_addr,
+                    "port": port_token, "location": dev_loc,
+                })
 
-        # ── 4. merge WWPN + link status into the lshwres phyfc rows by location
+        # ── 4. merge WWPN + link + speed + network address into the lshwres
+        #        phyfc rows, matched by physical card location code.  Each row
+        #        carries a "ports" list (one entry per physical port on the
+        #        card) plus flat fields (first port) for backward compatibility.
         for row in phyfc_rows:
-            info = loc_to_info.get(_norm_loc(row.get("location", "")))
-            if info:
-                row["wwpn"] = info["wwpn"]
-                row["device"] = info["dev"]
-                row["link_status"] = info["link"]
+            ports = loc_to_info.get(_norm_loc(row.get("location", "")))
+            if ports:
+                # Sort ports by their T<n> token for stable display order.
+                ports_sorted = sorted(ports, key=lambda p: p.get("port", ""))
+                row["ports"] = ports_sorted
+                first = ports_sorted[0]
+                row["wwpn"]            = first["wwpn"]
+                row["device"]          = first["dev"]
+                row["link_status"]     = first["link"]
+                row["port_speed"]      = first["speed"]
+                row["network_address"] = first["net_addr"]
         return phyfc_rows
+
+
 
 
 
@@ -814,7 +976,11 @@ def get_lpar_detail(hmc_id, system_id, lpar_id):
 
     if debug:
         result["raw"] = {k: v for k, v in raw.items()}
+        # Include the VIOS enrichment queries (lsdev / fcstat / lsdev -vpd)
+        # so the raw output behind the Physical FC HBAs panel is visible.
+        result["raw"].update(phyfc_debug)
     return jsonify(result)
+
 
 
 
@@ -2686,7 +2852,15 @@ def storage_login():
         session["storage_ip"]       = storage_ip
         session["storage_token"]    = token
         session["storage_username"] = username
+        # Remember this storage system (IP + username only — never the password)
+        # so it can be offered for one-click reconnect next time.
+        try:
+            storage_store.add({"storage_ip": storage_ip, "username": username,
+                               "name": storage_ip})
+        except Exception:
+            pass
         return jsonify({"ok": True, "token": token, "username": username, "storage_ip": storage_ip})
+
 
     if resp.status_code in (401, 403):
         return jsonify({"ok": False, "error": "Invalid credentials"}), 401
@@ -2730,7 +2904,39 @@ def storage_session_status():
     return jsonify({"ok": True, "connected": False})
 
 
+# ── Saved storage systems (IP + username only — no password stored) ─────────
+
+@app.route("/api/storage/systems", methods=["GET"])
+def storage_list_systems():
+    """Return all saved storage systems (IP + username; never any password)."""
+    return jsonify({"ok": True, "data": storage_store.list()})
+
+
+@app.route("/api/storage/systems", methods=["POST"])
+def storage_add_system():
+    """Manually save a storage system record (IP + username)."""
+    data = request.get_json(force=True) or {}
+    storage_ip = (data.get("storage_ip") or "").strip()
+    username   = (data.get("username") or "").strip()
+    if not storage_ip or not username:
+        return jsonify({"ok": False, "error": "storage_ip and username are required"}), 400
+    entry = storage_store.add({
+        "storage_ip": storage_ip,
+        "username": username,
+        "name": (data.get("name") or storage_ip).strip(),
+    })
+    return jsonify({"ok": True, "data": entry}), 201
+
+
+@app.route("/api/storage/systems/<sys_id>", methods=["DELETE"])
+def storage_remove_system(sys_id):
+    """Forget a saved storage system record."""
+    storage_store.remove(sys_id)
+    return jsonify({"ok": True})
+
+
 def _storage_get(endpoint: str, params: dict = None):
+
     """Query the Storage Virtualize REST API.
 
     IBM Storage Virtualize uses HTTP POST for ALL commands (including read-only
